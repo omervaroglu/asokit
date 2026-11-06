@@ -1,0 +1,57 @@
+# Daily keyword tracking (template).
+#
+# This runs `asokit run` on a schedule and commits a fresh CSV export back to
+# the repo, giving you a version-controlled history of your keyword positions.
+#
+# It is DISABLED by default: the `schedule` trigger below is commented out so a
+# fork doesn't start committing automatically. To enable it:
+#   1. Commit an `asokit.yaml` (or generate it from a secret — see below).
+#   2. Uncomment the `schedule` block.
+#
+# Note: asokit.yaml is git-ignored by default. Either commit your own config,
+# or write it from a repository secret in a step before `asokit run`.
+
+name: track
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "0 9 * * *" # every day at 09:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Build
+        run: go build -o asokit ./cmd/asokit
+
+      # Example of generating config from a secret instead of committing it:
+      # - name: Write config
+      #   run: printf '%s' "${{ secrets.ASOKIT_CONFIG }}" > asokit.yaml
+
+      - name: Run tracker
+        run: ./asokit run --db asokit.db --delay 3s
+
+      - name: Export CSV
+        run: ./asokit export --db asokit.db --out history.csv
+
+      - name: Commit history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add history.csv
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update keyword history ($(date -u +%F))"
+            git push
+          fi

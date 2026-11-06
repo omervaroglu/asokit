@@ -1,0 +1,17 @@
+# golangci-lint configuration.
+# Run with: golangci-lint run  (or: make lint)
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

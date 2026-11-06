@@ -1,0 +1,17 @@
+# asokit configuration — copy to asokit.yaml and edit.
+#
+# app_id: the numeric App Store id of the app you want to track. It is the
+#   number in an App Store URL, e.g. apps.apple.com/app/calm/id571800810 -> 571800810
+app_id: 571800810
+
+# country: the two-letter App Store storefront code (us, tr, gb, de, ...).
+country: us
+
+# search_limit: how many results to fetch per keyword (max 200). Optional.
+search_limit: 200
+
+# keywords: the search terms to track.
+keywords:
+  - meditation
+  - sleep
+  - calm
