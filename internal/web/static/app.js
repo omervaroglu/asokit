@@ -114,8 +114,10 @@ document.getElementById("f-cancel").addEventListener("click", () => {
 async function saveConfig() {
   const appid = parseInt(document.getElementById("f-appid").value, 10);
   const country = document.getElementById("f-country").value.trim();
+  // Accept one-per-line AND comma/semicolon-separated (e.g. pasted from App
+  // Store Connect). The server de-duplicates and splits again defensively.
   const keywords = document.getElementById("f-keywords").value
-    .split("\n").map((s) => s.trim()).filter(Boolean);
+    .split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
   const errEl = document.getElementById("f-error");
   errEl.textContent = "";
 

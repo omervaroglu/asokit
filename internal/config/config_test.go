@@ -60,6 +60,24 @@ func TestLoadInvalid(t *testing.T) {
 	}
 }
 
+func TestKeywordSplittingAndDedup(t *testing.T) {
+	// A comma/semicolon list in one entry, plus a duplicate and casing.
+	path := writeTemp(t, "app_id: 1\nkeywords:\n  - \"hesap, bölme ;ortak,masraf\"\n  - \"Masraf\"\n  - \"kira\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"hesap", "bölme", "ortak", "masraf", "kira"}
+	if len(cfg.Keywords) != len(want) {
+		t.Fatalf("keywords = %v, want %v", cfg.Keywords, want)
+	}
+	for i, w := range want {
+		if cfg.Keywords[i] != w {
+			t.Errorf("keyword[%d] = %q, want %q (order + dedup preserved)", i, cfg.Keywords[i], w)
+		}
+	}
+}
+
 func TestSearchLimitClamped(t *testing.T) {
 	cfg, err := Load(writeTemp(t, "app_id: 1\nsearch_limit: 5000\nkeywords:\n  - x\n"))
 	if err != nil {

@@ -77,10 +77,23 @@ func (c *Config) Normalize() {
 		c.SearchLimit = DefaultSearchLimit
 	}
 
-	// Trim and drop empty keywords.
-	cleaned := c.Keywords[:0]
-	for _, k := range c.Keywords {
-		if k = strings.TrimSpace(k); k != "" {
+	// Split keywords on commas/semicolons/newlines (so a comma-separated list
+	// pasted from App Store Connect becomes individual terms), trim, drop
+	// empties, and de-duplicate case-insensitively while preserving order.
+	sep := func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' }
+	seen := make(map[string]bool)
+	var cleaned []string
+	for _, raw := range c.Keywords {
+		for _, part := range strings.FieldsFunc(raw, sep) {
+			k := strings.TrimSpace(part)
+			if k == "" {
+				continue
+			}
+			key := strings.ToLower(k)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			cleaned = append(cleaned, k)
 		}
 	}
