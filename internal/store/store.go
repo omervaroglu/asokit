@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // register the pure-Go "sqlite" driver with database/sql
 )
 
 // Snapshot is one measurement of one keyword at one point in time.
@@ -42,7 +42,7 @@ func Open(path string) (*Store, error) {
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -107,7 +107,7 @@ func (s *Store) Latest(appID int64, country string) ([]Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying latest: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanSnapshots(rows)
 }
 
@@ -141,7 +141,7 @@ func (s *Store) All() ([]Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying all: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanSnapshots(rows)
 }
 

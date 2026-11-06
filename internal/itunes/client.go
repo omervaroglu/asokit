@@ -70,7 +70,7 @@ func (c *Client) Search(ctx context.Context, term, country string, limit int) ([
 	if err != nil {
 		return nil, fmt.Errorf("itunes search %q: %w", term, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Surface throttling clearly so callers can back off.
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {

@@ -37,9 +37,9 @@ func run(ctx context.Context, args []string) error {
 	case "once":
 		return cmdOnce(ctx, rest)
 	case "report":
-		return cmdReport(ctx, rest)
+		return cmdReport(rest)
 	case "export":
-		return cmdExport(ctx, rest)
+		return cmdExport(rest)
 	case "version", "--version", "-v":
 		fmt.Println("asokit " + version)
 		return nil
@@ -53,7 +53,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage(w *os.File) {
-	fmt.Fprint(w, `asokit — App Store keyword ranking tracker
+	_, _ = fmt.Fprint(w, `asokit — App Store keyword ranking tracker
 
 Usage:
   asokit <command> [flags]

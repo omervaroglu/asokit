@@ -36,7 +36,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	client := itunes.New()
 	now := time.Now().UTC()
@@ -107,7 +107,7 @@ func cmdOnce(ctx context.Context, args []string) error {
 }
 
 // cmdReport prints the latest stored position per keyword.
-func cmdReport(ctx context.Context, args []string) error {
+func cmdReport(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	cfgPath := fs.String("config", "asokit.yaml", "path to config file")
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
@@ -124,7 +124,7 @@ func cmdReport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	latest, err := db.Latest(cfg.AppID, cfg.Country)
 	if err != nil {
@@ -137,9 +137,9 @@ func cmdReport(ctx context.Context, args []string) error {
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if *trend {
-		fmt.Fprintln(tw, "KEYWORD\tPOSITION\tTREND\tAS OF")
+		_, _ = fmt.Fprintln(tw, "KEYWORD\tPOSITION\tTREND\tAS OF")
 	} else {
-		fmt.Fprintln(tw, "KEYWORD\tPOSITION\tAS OF")
+		_, _ = fmt.Fprintln(tw, "KEYWORD\tPOSITION\tAS OF")
 	}
 	for _, s := range latest {
 		pos := positionLabel(s.Position, s.Found)
@@ -149,17 +149,17 @@ func cmdReport(ctx context.Context, args []string) error {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Keyword, pos,
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Keyword, pos,
 				trendLabel(s, prevPos, prevFound), asOf)
 		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Keyword, pos, asOf)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Keyword, pos, asOf)
 		}
 	}
 	return tw.Flush()
 }
 
 // cmdExport writes all snapshots as CSV to stdout or a file.
-func cmdExport(ctx context.Context, args []string) error {
+func cmdExport(args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
 	out := fs.String("out", "", "output file (default: stdout)")
@@ -171,7 +171,7 @@ func cmdExport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	snaps, err := db.All()
 	if err != nil {
@@ -184,7 +184,7 @@ func cmdExport(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("creating %q: %w", *out, err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		w = f
 	}
 
