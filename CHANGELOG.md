@@ -19,6 +19,12 @@ adheres to [Semantic Versioning](https://semver.org/).
   default.
 - `internal/track` — shared "measure every keyword once" routine used by both
   `run` and the dashboard's Run-now action.
+- Multiple markets: one app id can track several storefronts, each with its own
+  keyword list and history. Config uses a `markets:` list (old single-market
+  `country:` + `keywords:` configs are migrated automatically). The dashboard
+  shows market tabs with an "Add market" action; `run` sweeps all markets and
+  `report --country xx` selects one. Keyword lists accept comma/semicolon
+  separated input and are de-duplicated.
 - YAML config, local SQLite storage, request throttling and backoff on API
   rate limiting.
 - CI (vet, test, build, lint) and a daily-tracking workflow template.

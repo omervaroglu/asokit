@@ -1,6 +1,7 @@
 // Package web serves the asokit dashboard: a self-contained single-page UI
 // (embedded in the binary) that can both read the local store and, when the
-// config has not been set up yet, collect it from the browser.
+// config has not been set up yet, collect it from the browser. It supports
+// multiple markets (storefronts) under one app id, each with its own keywords.
 package web
 
 import (
@@ -24,14 +25,12 @@ var staticFS embed.FS
 // runDelay is the pause between keyword requests during a browser-triggered run.
 const runDelay = 1500 * time.Millisecond
 
-// point is one measurement in a keyword's time series.
 type point struct {
 	TS       string `json:"ts"`
 	Position int    `json:"position"`
 	Found    bool   `json:"found"`
 }
 
-// keywordData is the series and summary for a single keyword.
 type keywordData struct {
 	Keyword  string  `json:"keyword"`
 	Current  *point  `json:"current"`
@@ -42,25 +41,24 @@ type keywordData struct {
 type dataResponse struct {
 	Initialized bool          `json:"initialized"`
 	AppID       int64         `json:"app_id"`
-	Country     string        `json:"country"`
+	Country     string        `json:"country"` // the market this response is for
+	Markets     []string      `json:"markets"` // all configured storefronts
 	GeneratedAt string        `json:"generated_at"`
 	Keywords    []keywordData `json:"keywords"`
 }
 
 type configResponse struct {
-	Initialized bool     `json:"initialized"`
-	Error       string   `json:"error,omitempty"`
-	AppID       int64    `json:"app_id"`
-	Country     string   `json:"country"`
-	Keywords    []string `json:"keywords"`
-	SearchLimit int      `json:"search_limit"`
+	Initialized bool            `json:"initialized"`
+	Error       string          `json:"error,omitempty"`
+	AppID       int64           `json:"app_id"`
+	SearchLimit int             `json:"search_limit"`
+	Markets     []config.Market `json:"markets"`
 }
 
 type configRequest struct {
-	AppID       int64    `json:"app_id"`
-	Country     string   `json:"country"`
-	Keywords    []string `json:"keywords"`
-	SearchLimit int      `json:"search_limit"`
+	AppID       int64           `json:"app_id"`
+	SearchLimit int             `json:"search_limit"`
+	Markets     []config.Market `json:"markets"`
 }
 
 // Server owns the mutable config state behind the dashboard.
@@ -102,24 +100,31 @@ func (s *Server) snapshot() (*config.Config, string) {
 	return s.cfg, s.cfgErr
 }
 
-func (s *Server) handleData(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	cfg, _ := s.snapshot()
 	resp := dataResponse{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Keywords:    []keywordData{},
+		Markets:     []string{},
 	}
 	if cfg == nil {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	kws, err := s.buildKeywords(cfg)
+
+	market, ok := cfg.Market(r.URL.Query().Get("country"))
+	if !ok {
+		market = cfg.Markets[0] // default to the first storefront
+	}
+	kws, err := s.buildKeywords(cfg.AppID, market)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	resp.Initialized = true
 	resp.AppID = cfg.AppID
-	resp.Country = cfg.Country
+	resp.Country = market.Country
+	resp.Markets = cfg.Countries()
 	resp.Keywords = kws
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -128,11 +133,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg, cfgErr := s.snapshot()
-		resp := configResponse{Country: config.DefaultCountry, SearchLimit: config.DefaultSearchLimit}
+		resp := configResponse{SearchLimit: config.DefaultSearchLimit, Markets: []config.Market{}}
 		if cfg != nil {
 			resp = configResponse{
-				Initialized: true, AppID: cfg.AppID, Country: cfg.Country,
-				Keywords: cfg.Keywords, SearchLimit: cfg.SearchLimit,
+				Initialized: true, AppID: cfg.AppID,
+				SearchLimit: cfg.SearchLimit, Markets: cfg.Markets,
 			}
 		} else if cfgErr != "" {
 			resp.Error = cfgErr
@@ -145,10 +150,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: "invalid request body"})
 			return
 		}
-		cfg := &config.Config{
-			AppID: req.AppID, Country: req.Country,
-			Keywords: req.Keywords, SearchLimit: req.SearchLimit,
-		}
+		cfg := &config.Config{AppID: req.AppID, SearchLimit: req.SearchLimit, Markets: req.Markets}
 		cfg.Normalize()
 		if err := cfg.Validate(); err != nil {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: err.Error()})
@@ -163,8 +165,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		s.cfgErr = ""
 		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, configResponse{
-			Initialized: true, AppID: cfg.AppID, Country: cfg.Country,
-			Keywords: cfg.Keywords, SearchLimit: cfg.SearchLimit,
+			Initialized: true, AppID: cfg.AppID,
+			SearchLimit: cfg.SearchLimit, Markets: cfg.Markets,
 		})
 
 	default:
@@ -185,28 +187,44 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Which markets to run: one (?country=xx) or all (omitted).
+	markets := cfg.Markets
+	if c := r.URL.Query().Get("country"); c != "" {
+		m, ok := cfg.Market(c)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown market " + c})
+			return
+		}
+		markets = []config.Market{m}
+	}
+
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
-	res, err := track.RunOnce(r.Context(), s.st, cfg, s.client, runDelay, nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": err.Error(), "stored": res.Stored, "failures": res.Failures,
-		})
-		return
+	total := track.Result{At: time.Now().UTC()}
+	for _, m := range markets {
+		res, err := track.RunOnce(r.Context(), s.st, cfg.AppID, m.Country, m.Keywords, cfg.SearchLimit, s.client, runDelay, nil)
+		total.Stored += res.Stored
+		total.Failures += res.Failures
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(), "stored": total.Stored, "failures": total.Failures,
+			})
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusOK, total)
 }
 
-// buildKeywords assembles one series per configured keyword, preserving config
-// order so the dashboard is stable.
-func (s *Server) buildKeywords(cfg *config.Config) ([]keywordData, error) {
-	history, err := s.st.History(cfg.AppID, cfg.Country)
+// buildKeywords assembles one series per keyword of a market, preserving the
+// market's keyword order so the dashboard is stable.
+func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, error) {
+	history, err := s.st.History(appID, m.Country)
 	if err != nil {
 		return nil, err
 	}
 
-	byKeyword := make(map[string][]point, len(cfg.Keywords))
+	byKeyword := make(map[string][]point, len(m.Keywords))
 	for _, snap := range history {
 		byKeyword[snap.Keyword] = append(byKeyword[snap.Keyword], point{
 			TS:       snap.Timestamp.Format(time.RFC3339),
@@ -215,8 +233,8 @@ func (s *Server) buildKeywords(cfg *config.Config) ([]keywordData, error) {
 		})
 	}
 
-	out := make([]keywordData, 0, len(cfg.Keywords))
-	for _, kw := range cfg.Keywords {
+	out := make([]keywordData, 0, len(m.Keywords))
+	for _, kw := range m.Keywords {
 		series := byKeyword[kw]
 		kd := keywordData{Keyword: kw, Series: series}
 		if n := len(series); n > 0 {

@@ -20,19 +20,23 @@ function toggleTheme() {
 }
 applyTheme(savedTheme());
 
-// ---------- element refs ----------------------------------------------------
+// ---------- refs & state ----------------------------------------------------
 const dashEl = document.getElementById("dash");
 const chartsEl = document.getElementById("charts");
 const tableEl = document.getElementById("table");
 const setupEl = document.getElementById("setup");
+const marketsEl = document.getElementById("markets");
 const controlsEl = document.getElementById("controls");
 const metaEl = document.getElementById("meta");
 
-let CONFIG = null;   // { initialized, error, app_id, country, keywords, search_limit }
-let DATA = null;     // /api/data response
-let VIEW = "charts"; // charts | table
+let CONFIG = null;     // { initialized, error, app_id, search_limit, markets:[{country,keywords}] }
+let DATA = null;       // /api/data response
+let CURRENT = "";      // selected market (country code)
+let VIEW = "charts";   // charts | table
+let SETUP_MODE = "first"; // first | add | edit
+let EDIT_COUNTRY = "";
 
-// ---------- control bar -----------------------------------------------------
+// ---------- control bar + market tabs ---------------------------------------
 function mkBtn(label, onClick, opts = {}) {
   const b = document.createElement("button");
   b.className = "ctl" + (opts.primary ? " primary" : "");
@@ -47,12 +51,29 @@ function renderControls(showDashControls) {
   if (showDashControls) {
     controlsEl.append(
       mkBtn("Run now", runNow, { id: "run" }),
-      mkBtn("Settings", () => showSetup(true)),
+      mkBtn("Settings", () => showSetup("edit")),
       mkBtn("Charts", () => setView("charts"), { pressed: VIEW === "charts" }),
       mkBtn("Table", () => setView("table"), { pressed: VIEW === "table" }),
     );
   }
   controlsEl.append(mkBtn("◐", toggleTheme));
+}
+function renderMarketTabs() {
+  marketsEl.innerHTML = "";
+  if (!CONFIG || !CONFIG.initialized) return;
+  for (const m of CONFIG.markets) {
+    const b = document.createElement("button");
+    b.className = "tab";
+    b.textContent = m.country.toUpperCase();
+    b.setAttribute("aria-selected", String(m.country === CURRENT));
+    b.addEventListener("click", () => { CURRENT = m.country; renderMarketTabs(); loadData(); });
+    marketsEl.appendChild(b);
+  }
+  const add = document.createElement("button");
+  add.className = "tab add";
+  add.textContent = "＋ Market";
+  add.addEventListener("click", () => showSetup("add"));
+  marketsEl.appendChild(add);
 }
 function setView(v) {
   VIEW = v;
@@ -66,29 +87,47 @@ function showDashboard() {
   setupEl.classList.add("hidden");
   dashEl.classList.remove("hidden");
   renderControls(true);
+  renderMarketTabs();
 }
-function showSetup(editing) {
+function showSetup(mode) {
+  SETUP_MODE = mode;
   dashEl.classList.add("hidden");
   setupEl.classList.remove("hidden");
   renderControls(false);
+  marketsEl.innerHTML = "";
   metaEl.textContent = "";
-  document.getElementById("setup-title").textContent = editing ? "Edit tracking" : "Set up tracking";
-  document.getElementById("f-cancel").classList.toggle("hidden", !editing);
+
+  const title = { first: "Set up tracking", add: "Add a market", edit: `Edit market: ${CURRENT.toUpperCase()}` }[mode];
+  document.getElementById("setup-title").textContent = title;
+  // app_id is global: editable on first/edit, hidden on add (same app).
+  document.getElementById("field-appid").classList.toggle("hidden", mode === "add");
+  document.getElementById("hint-appid").classList.toggle("hidden", mode === "add");
+  document.getElementById("f-cancel").classList.toggle("hidden", !(CONFIG && CONFIG.initialized));
+  document.getElementById("f-remove").classList.toggle("hidden",
+    !(mode === "edit" && CONFIG && CONFIG.markets.length > 1));
+
   const err = document.getElementById("f-error");
-  err.textContent = (!editing && CONFIG && CONFIG.error) ? CONFIG.error : "";
+  err.textContent = (mode === "first" && CONFIG && CONFIG.error) ? CONFIG.error : "";
 
   const appid = document.getElementById("f-appid");
   const country = document.getElementById("f-country");
   const kw = document.getElementById("f-keywords");
-  if (editing && CONFIG) {
-    appid.value = CONFIG.app_id || "";
-    country.value = CONFIG.country || "";
-    kw.value = (CONFIG.keywords || []).join("\n");
+
+  appid.value = CONFIG && CONFIG.app_id ? CONFIG.app_id : "";
+  if (mode === "edit") {
+    const m = (CONFIG.markets || []).find((x) => x.country === CURRENT);
+    EDIT_COUNTRY = CURRENT;
+    country.value = CURRENT;
+    country.readOnly = true; // renaming a market would orphan its history
+    kw.value = m ? m.keywords.join("\n") : "";
+    kw.focus();
   } else {
-    if (!appid.value) appid.value = "";
-    if (!country.value) country.value = (CONFIG && CONFIG.country) || "us";
+    EDIT_COUNTRY = "";
+    country.value = "";
+    country.readOnly = false;
+    kw.value = "";
+    (mode === "add" ? country : appid).focus();
   }
-  appid.focus();
 }
 
 // ---------- data fetching ---------------------------------------------------
@@ -96,11 +135,17 @@ async function loadConfig() {
   const res = await fetch("api/config", { cache: "no-store" });
   if (!res.ok) throw new Error("HTTP " + res.status);
   CONFIG = await res.json();
-  if (CONFIG.initialized) { showDashboard(); await loadData(); }
-  else { showSetup(false); }
+  if (CONFIG.initialized) {
+    const countries = CONFIG.markets.map((m) => m.country);
+    if (!countries.includes(CURRENT)) CURRENT = countries[0];
+    showDashboard();
+    await loadData();
+  } else {
+    showSetup("first");
+  }
 }
 async function loadData() {
-  const res = await fetch("api/data", { cache: "no-store" });
+  const res = await fetch("api/data?country=" + encodeURIComponent(CURRENT), { cache: "no-store" });
   if (!res.ok) throw new Error("HTTP " + res.status);
   DATA = await res.json();
   render();
@@ -111,27 +156,46 @@ document.getElementById("f-save").addEventListener("click", saveConfig);
 document.getElementById("f-cancel").addEventListener("click", () => {
   if (CONFIG && CONFIG.initialized) { showDashboard(); render(); }
 });
+document.getElementById("f-remove").addEventListener("click", removeMarket);
+
+function strip(m) { return { country: m.country, keywords: m.keywords }; }
+
+async function postConfig(appID, markets) {
+  const res = await fetch("api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ app_id: appID || 0, markets }),
+  });
+  return { ok: res.ok, status: res.status, body: await res.json() };
+}
+
 async function saveConfig() {
-  const appid = parseInt(document.getElementById("f-appid").value, 10);
-  const country = document.getElementById("f-country").value.trim();
-  // Accept one-per-line AND comma/semicolon-separated (e.g. pasted from App
-  // Store Connect). The server de-duplicates and splits again defensively.
+  const country = document.getElementById("f-country").value.trim().toLowerCase();
   const keywords = document.getElementById("f-keywords").value
     .split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+  const appID = SETUP_MODE === "add" && CONFIG
+    ? CONFIG.app_id
+    : parseInt(document.getElementById("f-appid").value, 10);
   const errEl = document.getElementById("f-error");
   errEl.textContent = "";
+
+  let markets;
+  const existing = (CONFIG && CONFIG.markets ? CONFIG.markets : []).map(strip);
+  if (SETUP_MODE === "edit") {
+    markets = existing.map((m) => (m.country === EDIT_COUNTRY ? { country: EDIT_COUNTRY, keywords } : m));
+  } else if (SETUP_MODE === "add") {
+    markets = [...existing, { country, keywords }];
+  } else {
+    markets = [{ country, keywords }];
+  }
 
   const btn = document.getElementById("f-save");
   btn.disabled = true;
   try {
-    const res = await fetch("api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: appid || 0, country, keywords }),
-    });
-    const body = await res.json();
-    if (!res.ok) { errEl.textContent = body.error || ("HTTP " + res.status); return; }
-    CONFIG = body;
+    const r = await postConfig(appID, markets);
+    if (!r.ok) { errEl.textContent = r.body.error || ("HTTP " + r.status); return; }
+    CONFIG = r.body;
+    CURRENT = SETUP_MODE === "edit" ? EDIT_COUNTRY : country;
     showDashboard();
     await loadData();
     toast("Saved");
@@ -142,14 +206,27 @@ async function saveConfig() {
   }
 }
 
+async function removeMarket() {
+  if (!CONFIG || CONFIG.markets.length <= 1) return;
+  if (!window.confirm(`Remove the ${CURRENT.toUpperCase()} market from tracking? Its stored history stays in the database.`)) return;
+  const markets = CONFIG.markets.map(strip).filter((m) => m.country !== CURRENT);
+  const r = await postConfig(CONFIG.app_id, markets);
+  if (!r.ok) { toast(r.body.error || "Remove failed"); return; }
+  CONFIG = r.body;
+  CURRENT = CONFIG.markets[0].country;
+  showDashboard();
+  await loadData();
+  toast("Market removed");
+}
+
 async function runNow() {
   const btn = document.getElementById("run");
   if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
   try {
-    const res = await fetch("api/run", { method: "POST" });
+    const res = await fetch("api/run?country=" + encodeURIComponent(CURRENT), { method: "POST" });
     const body = await res.json();
-    if (!res.ok) { toast(body.error ? "Run failed: " + body.error : "Run failed"); }
-    else { toast(`Stored ${body.stored} keyword(s)` + (body.failures ? `, ${body.failures} failed` : "")); }
+    if (!res.ok) toast(body.error ? "Run failed: " + body.error : "Run failed");
+    else toast(`Stored ${body.stored} keyword(s)` + (body.failures ? `, ${body.failures} failed` : ""));
     await loadData();
   } catch (e) {
     toast("Run failed: " + e.message);
@@ -190,7 +267,7 @@ function renderCharts() {
   if (!anyData) {
     const d = document.createElement("div");
     d.className = "empty";
-    d.innerHTML = `No snapshots yet for these keywords.<br>`;
+    d.innerHTML = `No snapshots yet for <b>${escapeHTML((DATA.country || "").toUpperCase())}</b>.<br>`;
     d.appendChild(mkBtn("Run now", runNow, { id: "run", primary: true }));
     chartsEl.appendChild(d);
     return;

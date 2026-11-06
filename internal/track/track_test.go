@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/omervaroglu/asokit/internal/config"
 	"github.com/omervaroglu/asokit/internal/itunes"
 	"github.com/omervaroglu/asokit/internal/store"
 )
@@ -33,8 +32,7 @@ func TestRunOnce(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 
-	cfg := &config.Config{AppID: 42, Country: "us", Keywords: []string{"a", "b"}, SearchLimit: 50}
-	res, err := RunOnce(context.Background(), st, cfg, itunes.New(), 0, nil)
+	res, err := RunOnce(context.Background(), st, 42, "us", []string{"a", "b"}, 50, itunes.New(), 0, nil)
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}

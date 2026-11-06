@@ -2,16 +2,26 @@
 #
 # app_id: the numeric App Store id of the app you want to track. It is the
 #   number in an App Store URL, e.g. apps.apple.com/app/calm/id571800810 -> 571800810
+#   The same app id is used across all markets.
 app_id: 571800810
-
-# country: the two-letter App Store storefront code (us, tr, gb, de, ...).
-country: us
 
 # search_limit: how many results to fetch per keyword (max 200). Optional.
 search_limit: 200
 
-# keywords: the search terms to track.
-keywords:
-  - meditation
-  - sleep
-  - calm
+# markets: one entry per storefront you want to track. Each market has its own
+# country code and its own keyword list (the same app is often marketed with
+# different keywords per country/language). Each market keeps its own history.
+markets:
+  - country: us
+    keywords:
+      - meditation
+      - sleep
+      - calm
+  - country: de
+    keywords:
+      - meditation
+      - schlaf
+      - entspannung
+
+# (Old single-market configs — a top-level `country:` and `keywords:` — are
+# still read and automatically migrated into a single market.)

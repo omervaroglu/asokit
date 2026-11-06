@@ -16,6 +16,9 @@
 *.csv
 !/history.csv
 
+# Backups
+*.bak
+
 # OS / editor
 .DS_Store
 *.swp

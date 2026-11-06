@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/omervaroglu/asokit/internal/config"
 	"github.com/omervaroglu/asokit/internal/itunes"
 	"github.com/omervaroglu/asokit/internal/rank"
 	"github.com/omervaroglu/asokit/internal/store"
@@ -25,13 +24,16 @@ type Result struct {
 	At       time.Time `json:"at"`
 }
 
-// RunOnce fetches and stores the current position for every keyword in cfg,
-// recording all snapshots under a single timestamp. progress, if non-nil, is
-// called after each keyword (with err set when that keyword failed).
+// RunOnce fetches and stores the current position for every keyword of one
+// market (appID + country), recording all snapshots under a single timestamp.
+// progress, if non-nil, is called after each keyword (err set when it failed).
 func RunOnce(
 	ctx context.Context,
 	st *store.Store,
-	cfg *config.Config,
+	appID int64,
+	country string,
+	keywords []string,
+	searchLimit int,
 	client *itunes.Client,
 	delay time.Duration,
 	progress func(keyword string, res rank.Result, err error),
@@ -39,14 +41,14 @@ func RunOnce(
 	now := time.Now().UTC()
 	out := Result{At: now}
 
-	for i, keyword := range cfg.Keywords {
+	for i, keyword := range keywords {
 		if i > 0 {
 			if err := sleep(ctx, delay); err != nil {
 				return out, err
 			}
 		}
 
-		results, err := Search(ctx, client, keyword, cfg.Country, cfg.SearchLimit)
+		results, err := Search(ctx, client, keyword, country, searchLimit)
 		if err != nil {
 			out.Failures++
 			if progress != nil {
@@ -55,11 +57,11 @@ func RunOnce(
 			continue
 		}
 
-		res := rank.Find(cfg.AppID, results)
+		res := rank.Find(appID, results)
 		if err := st.Insert(store.Snapshot{
 			Timestamp:   now,
-			AppID:       cfg.AppID,
-			Country:     cfg.Country,
+			AppID:       appID,
+			Country:     country,
 			Keyword:     keyword,
 			Position:    res.Position,
 			Found:       res.Found,

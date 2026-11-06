@@ -60,6 +60,15 @@
 
   .note { color: var(--muted); font-size: 12.5px; margin: 6px 0 22px; max-width: 70ch; }
 
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 16px; }
+  .tab {
+    font: inherit; font-size: 13px; padding: 6px 13px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer;
+  }
+  .tab:hover { color: var(--text); }
+  .tab[aria-selected="true"] { background: var(--series); color: #fff; border-color: transparent; font-weight: 600; }
+  .tab.add { color: var(--muted); font-weight: 600; }
+
   .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 16px 10px; }
   .card .kw { font-size: 14px; color: var(--text-2); margin: 0 0 2px; font-weight: 600; }
@@ -127,6 +136,7 @@
 
     <!-- dashboard view -->
     <div id="dash" class="hidden">
+      <div id="markets" class="tabs"></div>
       <p class="note">
         Position is the iTunes Search API's relevance ranking — a proxy for App
         Store search ranking, reliable for tracking movement over time. Lower is
@@ -140,13 +150,13 @@
     <section id="setup" class="hidden">
       <div class="card setup-card">
         <h2 id="setup-title">Set up tracking</h2>
-        <p class="sub">Enter the app and keywords to track. Saving writes
-          <code>asokit.yaml</code> next to the database.</p>
-        <label class="field"><span>App Store ID</span>
+        <p class="sub">Same app, one storefront at a time. Each market keeps its
+          own keywords and history. Saving writes <code>asokit.yaml</code>.</p>
+        <label class="field" id="field-appid"><span>App Store ID</span>
           <input id="f-appid" type="number" inputmode="numeric" placeholder="571800810"></label>
-        <p class="hint">The number in the App Store URL:
+        <p class="hint" id="hint-appid">The number in the App Store URL:
           apps.apple.com/app/…/id<b>571800810</b></p>
-        <label class="field"><span>Country (storefront)</span>
+        <label class="field"><span>Country / storefront (e.g. tr, de, us)</span>
           <input id="f-country" type="text" maxlength="2" placeholder="us"></label>
         <label class="field"><span>Keywords (one per line, or comma-separated)</span>
           <textarea id="f-keywords" rows="6" placeholder="meditation, sleep, calm&#10;— or one per line —"></textarea></label>
@@ -155,6 +165,7 @@
         <div class="setup-actions">
           <button class="ctl primary" id="f-save">Save</button>
           <button class="ctl hidden" id="f-cancel">Cancel</button>
+          <button class="ctl hidden" id="f-remove">Remove this market</button>
         </div>
         <p class="form-error" id="f-error"></p>
       </div>

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -42,22 +43,31 @@ func cmdRun(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	res, err := track.RunOnce(ctx, db, cfg, itunes.New(), *delay,
-		func(keyword string, r rank.Result, rerr error) {
-			if rerr != nil {
-				fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, rerr)
-				return
-			}
-			fmt.Printf("  %-30s %s\n", keyword, positionLabel(r.Position, r.Found))
-		})
-	if err != nil {
-		return err
+	client := itunes.New()
+	var totalStored, totalFailures int
+	var at time.Time
+	for _, m := range cfg.Markets {
+		fmt.Printf("[%s]\n", strings.ToUpper(m.Country))
+		res, err := track.RunOnce(ctx, db, cfg.AppID, m.Country, m.Keywords, cfg.SearchLimit, client, *delay,
+			func(keyword string, r rank.Result, rerr error) {
+				if rerr != nil {
+					fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, rerr)
+					return
+				}
+				fmt.Printf("  %-30s %s\n", keyword, positionLabel(r.Position, r.Found))
+			})
+		if err != nil {
+			return err
+		}
+		totalStored += res.Stored
+		totalFailures += res.Failures
+		at = res.At
 	}
 
-	fmt.Printf("\nStored %d keyword(s) for app %d (%s) at %s\n",
-		res.Stored, cfg.AppID, cfg.Country, res.At.Format(time.RFC3339))
-	if res.Failures > 0 {
-		return fmt.Errorf("%d keyword(s) failed", res.Failures)
+	fmt.Printf("\nStored %d keyword(s) across %d market(s) for app %d at %s\n",
+		totalStored, len(cfg.Markets), cfg.AppID, at.Format(time.RFC3339))
+	if totalFailures > 0 {
+		return fmt.Errorf("%d keyword(s) failed", totalFailures)
 	}
 	return nil
 }
@@ -94,6 +104,7 @@ func cmdReport(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	cfgPath := fs.String("config", "asokit.yaml", "path to config file")
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
+	country := fs.String("country", "", "storefront to report (default: first configured market)")
 	trend := fs.Bool("trend", false, "show movement versus the previous snapshot")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -103,21 +114,32 @@ func cmdReport(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	market := cfg.Markets[0]
+	if *country != "" {
+		m, ok := cfg.Market(*country)
+		if !ok {
+			return fmt.Errorf("market %q is not in the config (have: %s)", *country, strings.Join(cfg.Countries(), ", "))
+		}
+		market = m
+	}
+
 	db, err := store.Open(*dbPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 
-	latest, err := db.Latest(cfg.AppID, cfg.Country)
+	latest, err := db.Latest(cfg.AppID, market.Country)
 	if err != nil {
 		return err
 	}
 	if len(latest) == 0 {
-		fmt.Println("No snapshots yet. Run `asokit run` first.")
+		fmt.Printf("No snapshots yet for %s. Run `asokit run` first.\n", strings.ToUpper(market.Country))
 		return nil
 	}
 
+	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if *trend {
 		_, _ = fmt.Fprintln(tw, "KEYWORD\tPOSITION\tTREND\tAS OF")
@@ -128,7 +150,7 @@ func cmdReport(args []string) error {
 		pos := positionLabel(s.Position, s.Found)
 		asOf := s.Timestamp.Format("2006-01-02 15:04")
 		if *trend {
-			prevPos, prevFound, err := db.PreviousPosition(cfg.AppID, cfg.Country, s.Keyword)
+			prevPos, prevFound, err := db.PreviousPosition(cfg.AppID, market.Country, s.Keyword)
 			if err != nil {
 				return err
 			}
@@ -240,7 +262,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	where := "not set up yet — open it to configure"
 	if cfg != nil {
-		where = fmt.Sprintf("app %d, %s", cfg.AppID, cfg.Country)
+		where = fmt.Sprintf("app %d, markets: %s", cfg.AppID, strings.Join(cfg.Countries(), ", "))
 	}
 	errc := make(chan error, 1)
 	go func() {

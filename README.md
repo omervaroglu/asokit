@@ -63,13 +63,23 @@ make build        # produces ./asokit
    ```
 
    ```yaml
-   app_id: 571800810   # the "id" from the App Store URL
-   country: us         # two-letter storefront code
-   keywords:
-     - meditation
-     - sleep
-     - calm
+   app_id: 571800810       # the "id" from the App Store URL (shared across markets)
+   markets:
+     - country: us         # one entry per storefront, each with its own keywords
+       keywords:
+         - meditation
+         - sleep
+         - calm
+     - country: de
+       keywords:
+         - meditation
+         - schlaf
    ```
+
+   The same app is often marketed with different keywords per country/language,
+   so each **market** (storefront) has its own keyword list and its own history.
+   (Old single-market configs with a top-level `country:` + `keywords:` are read
+   and migrated automatically.)
 
 2. Take a measurement — this fetches each keyword and stores a snapshot:
 
@@ -90,7 +100,7 @@ make build        # produces ./asokit
 | ---------------- | ---------------------------------------------------------------- |
 | `asokit run`     | Fetch and store the current position for every keyword in config |
 | `asokit once`    | One-off lookup of a single term without touching the database    |
-| `asokit report`  | Show the latest stored position per keyword (`--trend` for movement) |
+| `asokit report`  | Latest position per keyword (`--trend` for movement, `--country xx` to pick a market) |
 | `asokit export`  | Export all stored snapshots as CSV (`--out file.csv`)            |
 | `asokit serve`   | Serve the local web dashboard (default `http://localhost:8080`)  |
 | `asokit version` | Print the version                                                |
@@ -124,6 +134,11 @@ enter the App Store ID, country and keywords, and **Save** (this writes
 `asokit.yaml`). Then click **Run now** to fetch the current positions. **Settings**
 reopens the form later. If you prefer the terminal, `asokit run` and a
 hand-written `asokit.yaml` work exactly the same — they share one config file.
+
+**Multiple markets:** the tabs at the top switch storefronts (TR · DE · …).
+**＋ Market** adds another country with its own keywords; each market keeps its
+own charts and history, so adding Germany never touches your Turkey data.
+"Run now" fetches the market you're viewing.
 
 It's a single self-contained page (HTML/CSS/SVG, no build step, no external
 assets — everything is embedded in the binary). Each keyword gets a small
