@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"text/tabwriter"
@@ -15,6 +17,7 @@ import (
 	"github.com/omervaroglu/asokit/internal/itunes"
 	"github.com/omervaroglu/asokit/internal/rank"
 	"github.com/omervaroglu/asokit/internal/store"
+	"github.com/omervaroglu/asokit/internal/web"
 )
 
 // cmdRun fetches the ranking proxy for every keyword in the config and stores a
@@ -211,6 +214,69 @@ func cmdExport(args []string) error {
 		fmt.Fprintf(os.Stderr, "Wrote %d snapshot(s) to %s\n", len(snaps), *out)
 	}
 	return cw.Error()
+}
+
+// cmdServe runs the local web dashboard until interrupted.
+func cmdServe(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	cfgPath := fs.String("config", "asokit.yaml", "path to config file")
+	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
+	addr := fs.String("addr", ":8080", "address to listen on")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	handler, err := web.Handler(db, cfg)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		fmt.Printf("asokit dashboard → %s  (app %d, %s)\nPress Ctrl+C to stop.\n",
+			listenURL(*addr), cfg.AppID, cfg.Country)
+		errc <- srv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("\nshutting down…")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	case err := <-errc:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+// listenURL turns a listen address into a clickable localhost URL.
+func listenURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://" + addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func positionLabel(position int, found bool) string {

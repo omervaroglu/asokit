@@ -133,6 +133,24 @@ func (s *Store) PreviousPosition(appID int64, country, keyword string) (position
 	}
 }
 
+// History returns every snapshot for the given app and country, ordered by
+// keyword then timestamp — the shape the dashboard needs to draw one time
+// series per keyword.
+func (s *Store) History(appID int64, country string) ([]Snapshot, error) {
+	rows, err := s.db.Query(
+		`SELECT id, ts, app_id, country, keyword, position, found, result_count
+		 FROM snapshots
+		 WHERE app_id = ? AND country = ?
+		 ORDER BY keyword, ts`,
+		appID, country,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying history: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanSnapshots(rows)
+}
+
 // All returns every snapshot ordered by timestamp then keyword, for export.
 func (s *Store) All() ([]Snapshot, error) {
 	rows, err := s.db.Query(

@@ -12,6 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 - `once` — one-off lookup of a single term for an app.
 - `report` — show the latest position per keyword, with `--trend` for movement.
 - `export` — export all snapshots as CSV.
+- `serve` — embedded single-page web dashboard (small-multiple rank-over-time
+  charts, trend badges, table view, light/dark themes); no external assets.
 - YAML config, local SQLite storage, request throttling and backoff on API
   rate limiting.
 - CI (vet, test, build, lint) and a daily-tracking workflow template.

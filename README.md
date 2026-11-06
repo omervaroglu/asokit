@@ -10,7 +10,10 @@ stores each measurement locally in SQLite so you can watch keywords move up and
 down.
 
 It's built for App Store Optimization (ASO) work: pick the keywords you care
-about, run `asokit run` on a schedule, and see the trend.
+about, run `asokit run` on a schedule, and see the trend — in the terminal or in
+the built-in web dashboard (`asokit serve`).
+
+![asokit dashboard](docs/dashboard.png)
 
 ```
 $ asokit report --trend
@@ -89,6 +92,7 @@ make build        # produces ./asokit
 | `asokit once`    | One-off lookup of a single term without touching the database    |
 | `asokit report`  | Show the latest stored position per keyword (`--trend` for movement) |
 | `asokit export`  | Export all stored snapshots as CSV (`--out file.csv`)            |
+| `asokit serve`   | Serve the local web dashboard (default `http://localhost:8080`)  |
 | `asokit version` | Print the version                                                |
 
 Quick one-off without a config file:
@@ -104,6 +108,21 @@ asokit once --app-id 571800810 --country us "meditation"
 - `--db` (default `asokit.db`) — SQLite database path
 - `--delay` (default `3s`, `run` only) — pause between keyword requests to stay
   friendly to the API. On throttling (HTTP 429/403) asokit backs off and retries.
+
+## Web dashboard
+
+For a visual view of the trend, start the embedded dashboard:
+
+```bash
+asokit serve                 # http://localhost:8080
+asokit serve --addr :9000    # custom port
+```
+
+It's a single self-contained page (HTML/CSS/SVG, no build step, no external
+assets — everything is embedded in the binary). Each keyword gets a small
+"rank over time" chart with the current position and movement; a Table view and
+light/dark themes are built in. The page reads from the same local database, so
+run `asokit run` periodically and refresh.
 
 ## Running on a schedule
 

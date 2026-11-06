@@ -40,6 +40,8 @@ func run(ctx context.Context, args []string) error {
 		return cmdReport(rest)
 	case "export":
 		return cmdExport(rest)
+	case "serve":
+		return cmdServe(ctx, rest)
 	case "version", "--version", "-v":
 		fmt.Println("asokit " + version)
 		return nil
@@ -63,6 +65,7 @@ Commands:
   once      One-off: look up a single term for an app and print its position
   report    Show the latest stored position per keyword (use --trend for movement)
   export    Export all stored snapshots as CSV
+  serve     Serve the local web dashboard (default http://localhost:8080)
   version   Print the version
   help      Show this help
 
