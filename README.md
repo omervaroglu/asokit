@@ -111,18 +111,28 @@ asokit once --app-id 571800810 --country us "meditation"
 
 ## Web dashboard
 
-For a visual view of the trend, start the embedded dashboard:
+You can run the whole thing from the browser — no config file editing, no
+terminal commands after `serve`:
 
 ```bash
-asokit serve                 # http://localhost:8080
-asokit serve --addr :9000    # custom port
+asokit serve                       # http://localhost:8080 (loopback only)
+asokit serve --addr 127.0.0.1:9000 # custom port
 ```
+
+On first launch, if there's no config yet, the dashboard opens a **setup form**:
+enter the App Store ID, country and keywords, and **Save** (this writes
+`asokit.yaml`). Then click **Run now** to fetch the current positions. **Settings**
+reopens the form later. If you prefer the terminal, `asokit run` and a
+hand-written `asokit.yaml` work exactly the same — they share one config file.
 
 It's a single self-contained page (HTML/CSS/SVG, no build step, no external
 assets — everything is embedded in the binary). Each keyword gets a small
 "rank over time" chart with the current position and movement; a Table view and
-light/dark themes are built in. The page reads from the same local database, so
-run `asokit run` periodically and refresh.
+light/dark themes are built in.
+
+> The server binds to loopback (`127.0.0.1`) by default and writes files /
+> makes outbound requests on your behalf — expose it beyond localhost only if
+> you understand that.
 
 ## Running on a schedule
 

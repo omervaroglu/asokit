@@ -23,74 +23,45 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --plane:    #0d0d0d;
-      --surface:  #1a1a19;
-      --text:     #f0efec;
-      --text-2:   #c3c2b7;
-      --muted:    #898781;
-      --grid:     #2c2c2a;
-      --baseline: #383835;
-      --series:   #3987e5;
-      --good:     #0ca30c;
-      --bad:      #e66767;
-      --border:   rgba(255,255,255,0.10);
+      --plane:#0d0d0d; --surface:#1a1a19; --text:#f0efec; --text-2:#c3c2b7;
+      --muted:#898781; --grid:#2c2c2a; --baseline:#383835; --series:#3987e5;
+      --good:#0ca30c; --bad:#e66767; --border:rgba(255,255,255,0.10);
     }
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --plane:    #0d0d0d;
-    --surface:  #1a1a19;
-    --text:     #f0efec;
-    --text-2:   #c3c2b7;
-    --muted:    #898781;
-    --grid:     #2c2c2a;
-    --baseline: #383835;
-    --series:   #3987e5;
-    --good:     #0ca30c;
-    --bad:      #e66767;
-    --border:   rgba(255,255,255,0.10);
+    --plane:#0d0d0d; --surface:#1a1a19; --text:#f0efec; --text-2:#c3c2b7;
+    --muted:#898781; --grid:#2c2c2a; --baseline:#383835; --series:#3987e5;
+    --good:#0ca30c; --bad:#e66767; --border:rgba(255,255,255,0.10);
   }
 
   * { box-sizing: border-box; }
   body {
-    margin: 0;
-    background: var(--plane);
-    color: var(--text);
+    margin: 0; background: var(--plane); color: var(--text);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    font-size: 15px;
-    line-height: 1.45;
+    font-size: 15px; line-height: 1.45;
   }
   .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
 
-  header.top {
-    display: flex; flex-wrap: wrap; align-items: baseline;
-    gap: 12px 20px; margin-bottom: 4px;
-  }
+  header.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px 20px; margin-bottom: 4px; }
   header.top h1 { font-size: 22px; margin: 0; font-weight: 650; }
   header.top .meta { color: var(--text-2); font-size: 14px; }
   header.top .spacer { flex: 1; }
-  .controls { display: flex; gap: 8px; align-items: center; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   button.ctl {
     font: inherit; font-size: 13px; color: var(--text-2);
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 11px; cursor: pointer;
   }
   button.ctl:hover { color: var(--text); }
+  button.ctl:disabled { opacity: .55; cursor: default; }
   button.ctl[aria-pressed="true"] { color: var(--text); border-color: var(--baseline); font-weight: 600; }
+  button.ctl.primary { background: var(--series); color: #fff; border-color: transparent; font-weight: 600; }
 
-  .note {
-    color: var(--muted); font-size: 12.5px; margin: 6px 0 22px;
-    max-width: 70ch;
-  }
+  .note { color: var(--muted); font-size: 12.5px; margin: 6px 0 22px; max-width: 70ch; }
 
-  .grid {
-    display: grid; gap: 16px;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  }
-  .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 16px 16px 10px;
-  }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 16px 10px; }
   .card .kw { font-size: 14px; color: var(--text-2); margin: 0 0 2px; font-weight: 600; }
   .card .rankrow { display: flex; align-items: baseline; gap: 10px; }
   .card .rank { font-size: 30px; font-weight: 680; letter-spacing: -0.5px; }
@@ -103,6 +74,7 @@
   svg.chart { width: 100%; height: 120px; display: block; margin-top: 10px; overflow: visible; }
 
   .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  .empty button { margin-top: 14px; }
 
   table.view { width: 100%; border-collapse: collapse; font-size: 14px; }
   table.view th, table.view td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
@@ -110,13 +82,37 @@
   table.view td.num { font-variant-numeric: tabular-nums; }
   .hidden { display: none; }
 
-  /* hover tooltip */
+  /* setup form */
+  .setup-card { max-width: 440px; }
+  .setup-card h2 { margin: 0 0 4px; font-size: 18px; }
+  .setup-card .sub { color: var(--text-2); font-size: 13.5px; margin: 0 0 18px; }
+  .field { display: block; margin-bottom: 14px; }
+  .field > span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 5px; font-weight: 600; }
+  .field input, .field textarea {
+    width: 100%; font: inherit; font-size: 14px; color: var(--text);
+    background: var(--plane); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; resize: vertical;
+  }
+  .field input:focus, .field textarea:focus { outline: 2px solid var(--series); outline-offset: 0; }
+  .hint { color: var(--muted); font-size: 12px; margin: -9px 0 14px; }
+  .hint b { color: var(--text-2); }
+  .setup-actions { display: flex; gap: 8px; margin-top: 4px; }
+  .form-error { color: var(--bad); font-size: 13px; min-height: 18px; margin: 10px 0 0; }
+
+  /* toast */
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(10px);
+    background: var(--text); color: var(--surface); font-size: 13px;
+    padding: 9px 14px; border-radius: 8px; opacity: 0; pointer-events: none;
+    transition: opacity .15s, transform .15s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
   .tip {
     position: fixed; pointer-events: none; z-index: 10;
     background: var(--text); color: var(--surface);
     font-size: 12px; padding: 5px 8px; border-radius: 6px;
-    transform: translate(-50%, -130%); white-space: nowrap; opacity: 0;
-    transition: opacity .08s;
+    transform: translate(-50%, -130%); white-space: nowrap; opacity: 0; transition: opacity .08s;
   }
 </style>
 </head>
@@ -126,21 +122,44 @@
       <h1>asokit</h1>
       <span class="meta" id="meta"></span>
       <span class="spacer"></span>
-      <div class="controls">
-        <button class="ctl" id="view-charts" aria-pressed="true">Charts</button>
-        <button class="ctl" id="view-table" aria-pressed="false">Table</button>
-        <button class="ctl" id="theme" title="Toggle theme">◐</button>
-      </div>
+      <div class="controls" id="controls"></div>
     </header>
-    <p class="note">
-      Position is the iTunes Search API's relevance ranking — a proxy for App
-      Store search ranking, reliable for tracking movement over time. Lower is
-      better; “—” means the app was outside the top results.
-    </p>
 
-    <div id="charts" class="grid"></div>
-    <div id="table" class="hidden"></div>
+    <!-- dashboard view -->
+    <div id="dash" class="hidden">
+      <p class="note">
+        Position is the iTunes Search API's relevance ranking — a proxy for App
+        Store search ranking, reliable for tracking movement over time. Lower is
+        better; “—” means the app was outside the top results.
+      </p>
+      <div id="charts" class="grid"></div>
+      <div id="table" class="hidden"></div>
+    </div>
+
+    <!-- setup / settings view -->
+    <section id="setup" class="hidden">
+      <div class="card setup-card">
+        <h2 id="setup-title">Set up tracking</h2>
+        <p class="sub">Enter the app and keywords to track. Saving writes
+          <code>asokit.yaml</code> next to the database.</p>
+        <label class="field"><span>App Store ID</span>
+          <input id="f-appid" type="number" inputmode="numeric" placeholder="571800810"></label>
+        <p class="hint">The number in the App Store URL:
+          apps.apple.com/app/…/id<b>571800810</b></p>
+        <label class="field"><span>Country (storefront)</span>
+          <input id="f-country" type="text" maxlength="2" placeholder="us"></label>
+        <label class="field"><span>Keywords (one per line)</span>
+          <textarea id="f-keywords" rows="6" placeholder="meditation&#10;sleep&#10;calm"></textarea></label>
+        <div class="setup-actions">
+          <button class="ctl primary" id="f-save">Save</button>
+          <button class="ctl hidden" id="f-cancel">Cancel</button>
+        </div>
+        <p class="form-error" id="f-error"></p>
+      </div>
+    </section>
+
     <div id="tip" class="tip"></div>
+    <div id="toast" class="toast"></div>
   </div>
   <script src="app.js"></script>
 </body>

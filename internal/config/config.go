@@ -40,14 +40,32 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config %q: %w", path, err)
 	}
 
-	c.applyDefaults()
+	c.Normalize()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
 }
 
-func (c *Config) applyDefaults() {
+// Save writes the config to path as YAML. It is used by `asokit serve` when the
+// config is edited in the browser. Note: this rewrites the file and does not
+// preserve hand-written comments — a header line records that.
+func (c *Config) Save(path string) error {
+	c.Normalize()
+	body, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("encoding config: %w", err)
+	}
+	const header = "# asokit configuration — managed by `asokit serve`.\n" +
+		"# Edits made in the browser rewrite this file; hand-written comments are not kept.\n"
+	if err := os.WriteFile(path, append([]byte(header), body...), 0o600); err != nil {
+		return fmt.Errorf("writing config %q: %w", path, err)
+	}
+	return nil
+}
+
+// Normalize applies defaults and trims input. It is safe to call repeatedly.
+func (c *Config) Normalize() {
 	if c.Country == "" {
 		c.Country = DefaultCountry
 	}

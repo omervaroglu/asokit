@@ -17,6 +17,7 @@ import (
 	"github.com/omervaroglu/asokit/internal/itunes"
 	"github.com/omervaroglu/asokit/internal/rank"
 	"github.com/omervaroglu/asokit/internal/store"
+	"github.com/omervaroglu/asokit/internal/track"
 	"github.com/omervaroglu/asokit/internal/web"
 )
 
@@ -41,43 +42,22 @@ func cmdRun(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	client := itunes.New()
-	now := time.Now().UTC()
-	var failures int
-
-	for i, keyword := range cfg.Keywords {
-		if i > 0 {
-			if err := sleep(ctx, *delay); err != nil {
-				return err
+	res, err := track.RunOnce(ctx, db, cfg, itunes.New(), *delay,
+		func(keyword string, r rank.Result, rerr error) {
+			if rerr != nil {
+				fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, rerr)
+				return
 			}
-		}
-
-		results, err := searchWithBackoff(ctx, client, keyword, cfg.Country, cfg.SearchLimit)
-		if err != nil {
-			failures++
-			fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, err)
-			continue
-		}
-
-		res := rank.Find(cfg.AppID, results)
-		if err := db.Insert(store.Snapshot{
-			Timestamp:   now,
-			AppID:       cfg.AppID,
-			Country:     cfg.Country,
-			Keyword:     keyword,
-			Position:    res.Position,
-			Found:       res.Found,
-			ResultCount: res.ResultCount,
-		}); err != nil {
-			return err
-		}
-		fmt.Printf("  %-30s %s\n", keyword, positionLabel(res.Position, res.Found))
+			fmt.Printf("  %-30s %s\n", keyword, positionLabel(r.Position, r.Found))
+		})
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("\nStored %d keyword(s) for app %d (%s) at %s\n",
-		len(cfg.Keywords)-failures, cfg.AppID, cfg.Country, now.Format(time.RFC3339))
-	if failures > 0 {
-		return fmt.Errorf("%d keyword(s) failed", failures)
+		res.Stored, cfg.AppID, cfg.Country, res.At.Format(time.RFC3339))
+	if res.Failures > 0 {
+		return fmt.Errorf("%d keyword(s) failed", res.Failures)
 	}
 	return nil
 }
@@ -99,7 +79,7 @@ func cmdOnce(ctx context.Context, args []string) error {
 		return errors.New("--app-id is required and must be positive")
 	}
 
-	results, err := searchWithBackoff(ctx, itunes.New(), term, *country, *limit)
+	results, err := track.Search(ctx, itunes.New(), term, *country, *limit)
 	if err != nil {
 		return err
 	}
@@ -221,22 +201,34 @@ func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	cfgPath := fs.String("config", "asokit.yaml", "path to config file")
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
-	addr := fs.String("addr", ":8080", "address to listen on")
+	addr := fs.String("addr", "127.0.0.1:8080", "address to listen on")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		return err
+	// The dashboard can be set up from the browser, so a missing or malformed
+	// config is not fatal: start uninitialized and let the user fix it there.
+	var (
+		cfg    *config.Config
+		cfgErr string
+	)
+	switch loaded, lerr := config.Load(*cfgPath); {
+	case lerr == nil:
+		cfg = loaded
+	case errors.Is(lerr, os.ErrNotExist):
+		fmt.Println("No config yet — open the dashboard to set it up.")
+	default:
+		cfgErr = lerr.Error()
+		fmt.Fprintf(os.Stderr, "config problem (fixable in the dashboard): %v\n", lerr)
 	}
+
 	db, err := store.Open(*dbPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 
-	handler, err := web.Handler(db, cfg)
+	handler, err := web.NewServer(db, cfg, cfgErr, *cfgPath).Handler()
 	if err != nil {
 		return err
 	}
@@ -246,10 +238,14 @@ func cmdServe(ctx context.Context, args []string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	where := "not set up yet — open it to configure"
+	if cfg != nil {
+		where = fmt.Sprintf("app %d, %s", cfg.AppID, cfg.Country)
+	}
 	errc := make(chan error, 1)
 	go func() {
-		fmt.Printf("asokit dashboard → %s  (app %d, %s)\nPress Ctrl+C to stop.\n",
-			listenURL(*addr), cfg.AppID, cfg.Country)
+		fmt.Printf("asokit dashboard → %s  (%s)\nPress Ctrl+C to stop.\n",
+			listenURL(*addr), where)
 		errc <- srv.ListenAndServe()
 	}()
 
@@ -273,7 +269,7 @@ func listenURL(addr string) string {
 	if err != nil {
 		return "http://" + addr
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "127.0.0.1" {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port)
