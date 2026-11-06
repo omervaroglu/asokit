@@ -4,9 +4,10 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/omervaroglu/asokit.svg)](https://pkg.go.dev/github.com/omervaroglu/asokit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**asokit** is a small, dependency-light command-line tool that tracks where an
-app ranks in App Store search for a set of keywords, over time. It stores each
-measurement locally in SQLite so you can watch keywords move up and down.
+**asokit** is a small command-line tool (two direct dependencies) that tracks
+where an app ranks in App Store search for a set of keywords, over time. It
+stores each measurement locally in SQLite so you can watch keywords move up and
+down.
 
 It's built for App Store Optimization (ASO) work: pick the keywords you care
 about, run `asokit run` on a schedule, and see the trend.
