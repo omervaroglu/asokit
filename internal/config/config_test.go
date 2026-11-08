@@ -74,12 +74,12 @@ func TestSaveEmitsMarketsOnly(t *testing.T) {
 
 func TestLoadMultiMarket(t *testing.T) {
 	path := writeTemp(t, `
-app_id: 6741804095
+app_id: 571800810
 markets:
-  - country: tr
-    keywords: ["hesap, bölme", "ortak"]
+  - country: us
+    keywords: ["sleep tracker, meditation", "calm"]
   - country: de
-    keywords: [konto, teilen]
+    keywords: [schlaf, entspannung]
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -88,12 +88,12 @@ markets:
 	if len(cfg.Markets) != 2 {
 		t.Fatalf("want 2 markets, got %d", len(cfg.Markets))
 	}
-	tr, ok := cfg.Market("TR") // case-insensitive lookup
-	if !ok || len(tr.Keywords) != 3 || tr.Keywords[0] != "hesap" {
-		t.Errorf("tr market = %+v (comma entry should split)", tr)
+	us, ok := cfg.Market("US") // case-insensitive lookup
+	if !ok || len(us.Keywords) != 3 || us.Keywords[0] != "sleep tracker" {
+		t.Errorf("us market = %+v (comma entry should split)", us)
 	}
-	if got := cfg.Countries(); len(got) != 2 || got[0] != "tr" || got[1] != "de" {
-		t.Errorf("Countries = %v, want [tr de] in order", got)
+	if got := cfg.Countries(); len(got) != 2 || got[0] != "us" || got[1] != "de" {
+		t.Errorf("Countries = %v, want [us de] in order", got)
 	}
 }
 
@@ -142,12 +142,12 @@ func TestStorefrontValidation(t *testing.T) {
 }
 
 func TestKeywordSplittingAndDedup(t *testing.T) {
-	path := writeTemp(t, "app_id: 1\nmarkets:\n  - country: tr\n    keywords:\n      - \"hesap, bölme ;ortak,masraf\"\n      - \"Masraf\"\n      - \"kira\"\n")
+	path := writeTemp(t, "app_id: 1\nmarkets:\n  - country: us\n    keywords:\n      - \"sleep tracker, meditation ;calm,focus\"\n      - \"Focus\"\n      - \"relax\"\n")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := []string{"hesap", "bölme", "ortak", "masraf", "kira"}
+	want := []string{"sleep tracker", "meditation", "calm", "focus", "relax"}
 	got := cfg.Markets[0].Keywords
 	if len(got) != len(want) {
 		t.Fatalf("keywords = %v, want %v", got, want)
