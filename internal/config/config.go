@@ -107,9 +107,21 @@ func (c *Config) Normalize() {
 
 // SplitKeywords splits each entry on commas/semicolons/newlines (so a list
 // pasted from App Store Connect becomes individual terms), trims, drops empties,
-// and de-duplicates case-insensitively while preserving order.
+// and de-duplicates case-insensitively while preserving order. CJK fullwidth
+// and ideographic separators are handled too, since Chinese/Japanese lists
+// commonly use them instead of the ASCII comma.
 func SplitKeywords(in []string) []string {
-	sep := func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' }
+	sep := func(r rune) bool {
+		switch r {
+		case ',', ';', '\n', '\r', '\t',
+			'，', // ，fullwidth comma
+			'、', // 、ideographic comma
+			'；', // ；fullwidth semicolon
+			'､': // ､halfwidth ideographic comma
+			return true
+		}
+		return false
+	}
 	seen := make(map[string]bool)
 	var out []string
 	for _, raw := range in {

@@ -159,6 +159,20 @@ func TestKeywordSplittingAndDedup(t *testing.T) {
 	}
 }
 
+func TestSplitChinesePunctuation(t *testing.T) {
+	// Fullwidth comma, ideographic comma and fullwidth semicolon all split.
+	got := SplitKeywords([]string{"冥想，睡眠、放松；打坐"})
+	want := []string{"冥想", "睡眠", "放松", "打坐"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("keyword[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
 func TestSearchLimitClamped(t *testing.T) {
 	cfg, err := Load(writeTemp(t, "app_id: 1\nsearch_limit: 5000\nmarkets:\n  - {country: us, keywords: [x]}\n"))
 	if err != nil {
