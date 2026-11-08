@@ -139,8 +139,8 @@ func (c *Config) Validate() error {
 	}
 	seen := make(map[string]bool)
 	for _, m := range c.Markets {
-		if len(m.Country) != 2 {
-			return fmt.Errorf("config: country must be a two-letter code, got %q", m.Country)
+		if err := validateCountry(m.Country); err != nil {
+			return err
 		}
 		if len(m.Keywords) == 0 {
 			return fmt.Errorf("config: market %q needs at least one keyword", m.Country)
@@ -152,6 +152,43 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// validateCountry rejects anything that is not a real App Store storefront
+// (ISO 3166-1 alpha-2) code. A frequent mistake is using a *language* code
+// (zh, ja, ko, …) instead of the *country* code, so those get a suggestion.
+func validateCountry(country string) error {
+	if len(country) != 2 {
+		return fmt.Errorf("config: country must be a two-letter code, got %q", country)
+	}
+	if iso3166Alpha2[country] {
+		return nil
+	}
+	if suggestion, ok := languageToCountry[country]; ok {
+		return fmt.Errorf("config: %q is a language code, not an App Store storefront — use %q for that store",
+			country, suggestion)
+	}
+	return fmt.Errorf("config: %q is not a valid App Store storefront code (use a two-letter country code like us, de, tr)", country)
+}
+
+// languageToCountry maps common language codes people type by mistake to the
+// storefront they most likely meant.
+var languageToCountry = map[string]string{
+	"zh": "cn", "ja": "jp", "ko": "kr", "uk": "gb", "en": "us",
+	"el": "gr", "sv": "se", "da": "dk", "he": "il", "cs": "cz",
+	"nb": "no", "nn": "no", "hi": "in", "fa": "ir", "vi": "vn",
+}
+
+// iso3166Alpha2 is the set of valid ISO 3166-1 alpha-2 country codes (lower
+// case). Every App Store storefront is one of these, so it is a superset that
+// never rejects a real storefront while still catching language codes and typos.
+var iso3166Alpha2 = func() map[string]bool {
+	const codes = "ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo bq br bs bt bv bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg eh er es et fi fj fk fm fo fr ga gb gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mf mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sj sk sl sm sn so sr ss st sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug um us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw"
+	set := make(map[string]bool)
+	for _, c := range strings.Fields(codes) {
+		set[c] = true
+	}
+	return set
+}()
 
 // Market returns the market for the given country code, if present.
 func (c *Config) Market(country string) (Market, bool) {

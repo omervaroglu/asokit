@@ -25,6 +25,10 @@ adheres to [Semantic Versioning](https://semver.org/).
   shows market tabs with an "Add market" action; `run` sweeps all markets and
   `report --country xx` selects one. Keyword lists accept comma/semicolon
   separated input and are de-duplicated.
+- Storefront validation: a market's country must be a real App Store storefront
+  (ISO 3166-1 alpha-2). Language codes typed by mistake are rejected with a
+  suggestion (e.g. `zh` → "use cn"), surfaced in the setup form instead of
+  silently failing every request at run time.
 - YAML config, local SQLite storage, request throttling and backoff on API
   rate limiting.
 - CI (vet, test, build, lint) and a daily-tracking workflow template.

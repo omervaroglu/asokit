@@ -114,6 +114,33 @@ func TestLoadInvalid(t *testing.T) {
 	}
 }
 
+func TestStorefrontValidation(t *testing.T) {
+	// Language codes and typos are rejected; real storefronts pass.
+	bad := map[string]string{
+		"zh (Chinese language)":  "app_id: 1\nmarkets:\n  - {country: zh, keywords: [x]}\n",
+		"ja (Japanese language)": "app_id: 1\nmarkets:\n  - {country: ja, keywords: [x]}\n",
+		"xx (not a country)":     "app_id: 1\nmarkets:\n  - {country: xx, keywords: [x]}\n",
+	}
+	for name, content := range bad {
+		t.Run("reject "+name, func(t *testing.T) {
+			if _, err := Load(writeTemp(t, content)); err == nil {
+				t.Errorf("expected error for %s", name)
+			}
+		})
+	}
+
+	// The China storefront (cn) is accepted.
+	if _, err := Load(writeTemp(t, "app_id: 1\nmarkets:\n  - {country: cn, keywords: [x]}\n")); err != nil {
+		t.Errorf("cn should be a valid storefront: %v", err)
+	}
+
+	// The zh error suggests cn.
+	_, err := Load(writeTemp(t, "app_id: 1\nmarkets:\n  - {country: zh, keywords: [x]}\n"))
+	if err == nil || !strings.Contains(err.Error(), "cn") {
+		t.Errorf("zh error should suggest cn, got: %v", err)
+	}
+}
+
 func TestKeywordSplittingAndDedup(t *testing.T) {
 	path := writeTemp(t, "app_id: 1\nmarkets:\n  - country: tr\n    keywords:\n      - \"hesap, bölme ;ortak,masraf\"\n      - \"Masraf\"\n      - \"kira\"\n")
 	cfg, err := Load(path)
