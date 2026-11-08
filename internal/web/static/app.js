@@ -118,7 +118,7 @@ function showSetup(mode) {
     const m = (CONFIG.markets || []).find((x) => x.country === CURRENT);
     EDIT_COUNTRY = CURRENT;
     country.value = CURRENT;
-    country.readOnly = true; // renaming a market would orphan its history
+    country.readOnly = false; // editable; changing it is confirmed on save
     kw.value = m ? m.keywords.join("\n") : "";
     kw.focus();
   } else {
@@ -182,7 +182,14 @@ async function saveConfig() {
   let markets;
   const existing = (CONFIG && CONFIG.markets ? CONFIG.markets : []).map(strip);
   if (SETUP_MODE === "edit") {
-    markets = existing.map((m) => (m.country === EDIT_COUNTRY ? { country: EDIT_COUNTRY, keywords } : m));
+    if (country !== EDIT_COUNTRY && country) {
+      const ok = window.confirm(
+        `Change this market from ${EDIT_COUNTRY.toUpperCase()} to ${country.toUpperCase()}?\n\n` +
+        `The ${EDIT_COUNTRY.toUpperCase()} history stays saved but won't show here until you add ${EDIT_COUNTRY.toUpperCase()} back, ` +
+        `and ${country.toUpperCase()} starts its own history.`);
+      if (!ok) return;
+    }
+    markets = existing.map((m) => (m.country === EDIT_COUNTRY ? { country, keywords } : m));
   } else if (SETUP_MODE === "add") {
     markets = [...existing, { country, keywords }];
   } else {
@@ -195,7 +202,7 @@ async function saveConfig() {
     const r = await postConfig(appID, markets);
     if (!r.ok) { errEl.textContent = r.body.error || ("HTTP " + r.status); return; }
     CONFIG = r.body;
-    CURRENT = SETUP_MODE === "edit" ? EDIT_COUNTRY : country;
+    CURRENT = country;
     showDashboard();
     await loadData();
     toast("Saved");
