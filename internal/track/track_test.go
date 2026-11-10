@@ -177,7 +177,7 @@ func TestSearchRetriesServerError(t *testing.T) {
 	fastBackoff(t)
 
 	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if hits.Add(1) <= 2 { // fail the first two attempts, then recover
 			http.Error(w, "boom", http.StatusServiceUnavailable)
 			return
@@ -209,7 +209,7 @@ func TestSearchRetriesTimeout(t *testing.T) {
 	fastBackoff(t)
 
 	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		time.Sleep(200 * time.Millisecond) // always slower than the client timeout
 	}))
