@@ -4,7 +4,46 @@ import (
 	"testing"
 
 	"github.com/omervaroglu/asokit/internal/config"
+	"github.com/omervaroglu/asokit/internal/store"
 )
+
+func TestCompareMove(t *testing.T) {
+	up := store.Snapshot{Position: 2, Found: true}
+	down := store.Snapshot{Position: 9, Found: true}
+	gone := store.Snapshot{Found: false}
+
+	cases := []struct {
+		name            string
+		base, cur       store.Snapshot
+		hasBase, hasCur bool
+		want            string
+	}{
+		{"improved", down, up, true, true, "▲ 7"},
+		{"worsened", up, down, true, true, "▼ 7"},
+		{"flat", up, up, true, true, "="},
+		{"dropped out", up, gone, true, true, "dropped out"},
+		{"entered", gone, up, true, true, "entered"},
+		{"missing side", up, up, false, true, "—"},
+	}
+	for _, c := range cases {
+		if got := compareMove(c.base, c.hasBase, c.cur, c.hasCur); got != c.want {
+			t.Errorf("%s: compareMove = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCompareDiffDelta(t *testing.T) {
+	d := func(v float64) store.Snapshot { return store.Snapshot{Difficulty: &v} }
+	if got := compareDiffDelta(d(60), true, d(72), true); got != "+12" {
+		t.Errorf("rising difficulty = %q, want +12", got)
+	}
+	if got := compareDiffDelta(d(72), true, d(70), true); got != "-2" {
+		t.Errorf("falling difficulty = %q, want -2", got)
+	}
+	if got := compareDiffDelta(store.Snapshot{}, true, d(50), true); got != "—" {
+		t.Errorf("missing base difficulty = %q, want —", got)
+	}
+}
 
 func TestResultsLabel(t *testing.T) {
 	cases := []struct {

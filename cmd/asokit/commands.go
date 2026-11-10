@@ -128,6 +128,7 @@ func cmdReport(args []string) error {
 	country := fs.String("country", "", "storefront to report (default: first configured market)")
 	trend := fs.Bool("trend", false, "show movement versus the previous snapshot")
 	competitors := fs.Bool("competitors", false, "add a column per configured competitor with its rank")
+	compare := fs.String("compare", "", "compare the latest run with the run nearest this date (YYYY-MM-DD)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -151,6 +152,10 @@ func cmdReport(args []string) error {
 		return err
 	}
 	defer func() { _ = db.Close() }()
+
+	if *compare != "" {
+		return reportCompare(db, cfg, market, *compare)
+	}
 
 	latest, err := db.Latest(cfg.AppID, market.Country)
 	if err != nil {
@@ -245,6 +250,142 @@ func cmdReport(args []string) error {
 		return err
 	}
 	return printSection("Phrases", market.Phrases)
+}
+
+// reportCompare shows, per keyword, how the latest run moved versus the run
+// nearest a chosen date: position movement, difficulty change, and a new/lost
+// flag when a keyword appears in only one of the two runs.
+func reportCompare(db *store.Store, cfg *config.Config, market config.Market, dateStr string) error {
+	target, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return fmt.Errorf("--compare: invalid date %q, want YYYY-MM-DD", dateStr)
+	}
+
+	history, err := db.History(cfg.AppID, market.Country)
+	if err != nil {
+		return err
+	}
+	if len(history) == 0 {
+		fmt.Printf("No snapshots yet for %s. Run `asokit run` first.\n", strings.ToUpper(market.Country))
+		return nil
+	}
+
+	// Index by keyword→run-timestamp and collect the distinct run timestamps.
+	byKwTS := map[string]map[string]store.Snapshot{}
+	tsSet := map[string]time.Time{}
+	for _, s := range history {
+		ts := s.Timestamp.Format(time.RFC3339)
+		if byKwTS[s.Keyword] == nil {
+			byKwTS[s.Keyword] = map[string]store.Snapshot{}
+		}
+		byKwTS[s.Keyword][ts] = s
+		tsSet[ts] = s.Timestamp
+	}
+
+	// The latest run, and the run whose timestamp is nearest the target date.
+	var latestTS, baseTS string
+	var latestT time.Time
+	bestDiff := time.Duration(1) << 62
+	for ts, t := range tsSet {
+		if latestTS == "" || t.After(latestT) {
+			latestTS, latestT = ts, t
+		}
+		d := t.Sub(target)
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDiff {
+			bestDiff, baseTS = d, ts
+		}
+	}
+
+	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
+	fmt.Printf("Comparing %s → %s\n",
+		tsSet[baseTS].Format("2006-01-02 15:04"), tsSet[latestTS].Format("2006-01-02 15:04"))
+	if baseTS == latestTS {
+		fmt.Println("(only one run near that date — nothing to compare)")
+		return nil
+	}
+
+	header := []string{"KEYWORD", "WAS", "NOW", "MOVE", "DIFF Δ", "FLAG"}
+	printSection := func(title string, terms []string) error {
+		if len(terms) == 0 {
+			return nil
+		}
+		if title != "" {
+			fmt.Printf("\n%s\n", title)
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, strings.Join(header, "\t"))
+		for _, kw := range terms {
+			base, hasBase := byKwTS[kw][baseTS]
+			cur, hasCur := byKwTS[kw][latestTS]
+			if !hasBase && !hasCur {
+				continue
+			}
+			was, now := "—", "—"
+			if hasBase {
+				was = positionLabel(base.Position, base.Found)
+			}
+			if hasCur {
+				now = positionLabel(cur.Position, cur.Found)
+			}
+			flag := ""
+			switch {
+			case hasCur && !hasBase:
+				flag = "new"
+			case hasBase && !hasCur:
+				flag = "lost"
+			}
+			row := []string{kw, was, now,
+				compareMove(base, hasBase, cur, hasCur),
+				compareDiffDelta(base, hasBase, cur, hasCur), flag}
+			_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
+		}
+		return tw.Flush()
+	}
+
+	kwTitle := ""
+	if len(market.Phrases) > 0 {
+		kwTitle = "Keywords"
+	}
+	if err := printSection(kwTitle, market.Keywords); err != nil {
+		return err
+	}
+	return printSection("Phrases", market.Phrases)
+}
+
+// compareMove describes the position movement between two snapshots (positive
+// movement = improved, i.e. a smaller rank number).
+func compareMove(base store.Snapshot, hasBase bool, cur store.Snapshot, hasCur bool) string {
+	if !hasBase || !hasCur {
+		return "—"
+	}
+	switch {
+	case !base.Found && !cur.Found:
+		return "—"
+	case base.Found && !cur.Found:
+		return "dropped out"
+	case !base.Found && cur.Found:
+		return "entered"
+	}
+	switch d := base.Position - cur.Position; {
+	case d > 0:
+		return fmt.Sprintf("▲ %d", d)
+	case d < 0:
+		return fmt.Sprintf("▼ %d", -d)
+	default:
+		return "="
+	}
+}
+
+// compareDiffDelta is the signed difficulty change, or "—" when either side
+// lacks a difficulty score.
+func compareDiffDelta(base store.Snapshot, hasBase bool, cur store.Snapshot, hasCur bool) string {
+	if !hasBase || !hasCur || base.Difficulty == nil || cur.Difficulty == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%+.0f", *cur.Difficulty-*base.Difficulty)
 }
 
 // cmdExport writes all snapshots as CSV to stdout or a file.
