@@ -8,15 +8,42 @@ app_id: 571800810
 # search_limit: how many results to fetch per keyword (max 200). Optional.
 search_limit: 200
 
+# store_top: how many of the top results to keep per snapshot, for the
+#   competition metrics and competitor tracking. Optional (default 50, capped at
+#   search_limit). A competitor ranked below store_top can't be tracked.
+store_top: 50
+
+# relevance: what counts as "the same type" as your app, for the relevance
+#   metric (how many of the top 10 are competitors like you). Optional.
+#   - genre_ids: App Store category ids. If omitted, your app's own category is
+#     looked up automatically once per run.
+#   - title_terms: words whose presence in a result's title also makes it count.
+# relevance:
+#   genre_ids: ["6007"]        # 6007 = Education, 6015 = Finance, 6013 = Health…
+#   title_terms: ["budget", "expense"]
+
+# competitors: other apps to track alongside yours. Their rank per keyword is
+#   derived from the stored results (no extra API calls), so it's visible only
+#   down to store_top. Optional.
+# competitors:
+#   - { id: 123456789, name: "Rival A" }
+#   - { id: 987654321, name: "Rival B" }
+
 # markets: one entry per storefront you want to track. Each market has its own
 # country code and its own keyword list (the same app is often marketed with
 # different keywords per country/language). Each market keeps its own history.
+#
+# phrases: an optional second group of terms per market, tracked exactly like
+#   keywords but shown as a separate section (e.g. multi-word search phrases).
 markets:
   - country: us
     keywords:
       - meditation
       - sleep
       - calm
+    phrases:
+      - sleep sounds
+      - guided meditation
   - country: de
     keywords:
       - meditation

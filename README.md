@@ -36,7 +36,43 @@ absolute "you are #N in the App Store" number. This is a deliberate trade-off:
 the Search API is free, needs no account, and works for any app.
 
 Because fetches are capped at 200 results, "not in top results" means your app
-was not in the top 200 for that term — not that it is entirely unranked.
+was not in the top 200 for that term — not that it is entirely unranked. A term
+that returns the full 200 is shown as **"200+"**, since 200 is a ceiling, not a
+true total; a term returning fewer is a *narrower*, lower-competition term.
+
+asokit does **not** report search *volume* or *popularity*. The only legitimate
+source for that is Apple Search Ads' popularity score, which is out of scope
+here. No column or field is a volume estimate.
+
+## Competition metrics
+
+On each run asokit also keeps the top results per keyword (configurable via
+`store_top`, default 50) and derives two scores, stored per snapshot. They are
+**heuristics for comparing keywords and tracking change over time**, not
+official Apple data.
+
+- **Difficulty (0–100)** — how contested a term looks, from its top-10
+  landscape. A weighted blend (defaults in [`internal/metrics`](internal/metrics/metrics.go),
+  overridable) of: the median rating count (log-scaled, weight 0.5), the share
+  of top-10 titles that contain the term (0.3), and the median app age (0.2).
+  Higher = harder.
+- **Relevance (0–10)** — how on-topic the term is for *your* app: how many of
+  the top 10 (excluding you) are the same type, i.e. share your App Store
+  category or carry one of your `title_terms`. Higher = the top results are
+  genuinely your category.
+
+You can also list **competitors** and see their rank per keyword (derived from
+the stored results, no extra requests), and group terms into **keywords** and
+**phrases** sections. See [`asokit.example.yaml`](asokit.example.yaml) for all
+fields. Title matching is Unicode-safe (Turkish dotted/dotless i, German
+umlaut/ß, CJK).
+
+```
+$ asokit report --competitors
+KEYWORD       POSITION  DIFF  REL  RESULTS  Headspace  AS OF
+meditation    #3        80    9    200+     #2         2026-11-10 14:19
+sleep sounds  #7        77    9    188      —          2026-11-10 14:19
+```
 
 ## Install
 
@@ -100,8 +136,8 @@ make build        # produces ./asokit
 | ---------------- | ---------------------------------------------------------------- |
 | `asokit run`     | Fetch and store the current position for every keyword in config |
 | `asokit once`    | One-off lookup of a single term without touching the database    |
-| `asokit report`  | Latest position per keyword (`--trend` for movement, `--country xx` to pick a market) |
-| `asokit export`  | Export all stored snapshots as CSV (`--out file.csv`)            |
+| `asokit report`  | Latest position per keyword, with difficulty/relevance/results columns (`--trend` for movement, `--competitors` for competitor ranks, `--compare YYYY-MM-DD` to diff against an earlier run, `--country xx` to pick a market) |
+| `asokit export`  | Export all stored snapshots as CSV, incl. difficulty/relevance/narrow (`--out file.csv`) |
 | `asokit serve`   | Serve the local web dashboard (default `http://localhost:8080`)  |
 | `asokit version` | Print the version                                                |
 
@@ -117,7 +153,9 @@ asokit once --app-id 571800810 --country us "meditation"
 - `--config` (default `asokit.yaml`) — config path
 - `--db` (default `asokit.db`) — SQLite database path
 - `--delay` (default `3s`, `run` only) — pause between keyword requests to stay
-  friendly to the API. On throttling (HTTP 429/403) asokit backs off and retries.
+  friendly to the API. On throttling (HTTP 429/403) **and** transient failures
+  (timeouts, HTTP 5xx) asokit backs off and retries, so one flaky request
+  doesn't drop a keyword from the run.
 
 ## Web dashboard
 
@@ -142,8 +180,10 @@ own charts and history, so adding Germany never touches your Turkey data.
 
 It's a single self-contained page (HTML/CSS/SVG, no build step, no external
 assets — everything is embedded in the binary). Each keyword gets a small
-"rank over time" chart with the current position and movement; a Table view and
-light/dark themes are built in.
+"rank over time" chart with the current position, movement and the difficulty /
+relevance / results metrics; click a card for its top-10 and competitor
+sparklines. App version dates are drawn as dashed markers on the charts. A
+sortable Table view and light/dark themes are built in.
 
 > The server binds to loopback (`127.0.0.1`) by default and writes files /
 > makes outbound requests on your behalf — expose it beyond localhost only if
