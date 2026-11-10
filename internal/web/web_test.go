@@ -135,6 +135,47 @@ func TestConfigPostThenGet(t *testing.T) {
 	}
 }
 
+// A browser "Save" only sends app_id/search_limit/markets. Fields the form does
+// not carry (competitors, relevance, store_top) must survive the POST rather
+// than being wiped — the config-preservation guarantee from the spec.
+func TestConfigPostPreservesUneditedFields(t *testing.T) {
+	cfg := &config.Config{
+		AppID: 1, SearchLimit: 200, StoreTop: 25,
+		Relevance:   config.Relevance{GenreIDs: []string{"6015"}},
+		Competitors: []config.Competitor{{ID: 999, Name: "Rival"}},
+		Markets:     []config.Market{{Country: "tr", Keywords: []string{"uyku"}}},
+	}
+	s, h := newServer(t, cfg)
+
+	body := []byte(`{"app_id":1,"search_limit":200,"markets":[{"country":"tr","keywords":["uyku","kira"]}]}`)
+	rr := do(h, http.MethodPost, "/api/config", body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	// The edited field changed...
+	if got := len(s.cfg.Markets[0].Keywords); got != 2 {
+		t.Errorf("keywords not updated: %d", got)
+	}
+	// ...but the unedited fields are intact, both in memory and on disk.
+	if s.cfg.StoreTop != 25 {
+		t.Errorf("StoreTop wiped: %d", s.cfg.StoreTop)
+	}
+	if len(s.cfg.Competitors) != 1 || s.cfg.Competitors[0].ID != 999 {
+		t.Errorf("competitors wiped: %+v", s.cfg.Competitors)
+	}
+	if len(s.cfg.Relevance.GenreIDs) != 1 {
+		t.Errorf("relevance wiped: %+v", s.cfg.Relevance)
+	}
+	reloaded, err := config.Load(s.cfgPath)
+	if err != nil {
+		t.Fatalf("reload saved config: %v", err)
+	}
+	if len(reloaded.Competitors) != 1 || reloaded.Competitors[0].ID != 999 {
+		t.Errorf("competitors not persisted to disk: %+v", reloaded.Competitors)
+	}
+}
+
 func TestConfigPostInvalid(t *testing.T) {
 	_, h := newServer(t, nil)
 	rr := do(h, http.MethodPost, "/api/config", []byte(`{"app_id":0,"markets":[]}`))

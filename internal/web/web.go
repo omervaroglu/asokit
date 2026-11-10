@@ -15,6 +15,7 @@ import (
 
 	"github.com/omervaroglu/asokit/internal/config"
 	"github.com/omervaroglu/asokit/internal/itunes"
+	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/store"
 	"github.com/omervaroglu/asokit/internal/track"
 )
@@ -150,7 +151,16 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: "invalid request body"})
 			return
 		}
-		cfg := &config.Config{AppID: req.AppID, SearchLimit: req.SearchLimit, Markets: req.Markets}
+		// Merge onto the existing config so fields the setup form does not send
+		// (store_top, relevance, competitors) are preserved rather than wiped.
+		cfg := &config.Config{}
+		if cur, _ := s.snapshot(); cur != nil {
+			clone := *cur
+			cfg = &clone
+		}
+		cfg.AppID = req.AppID
+		cfg.SearchLimit = req.SearchLimit
+		cfg.Markets = req.Markets
 		cfg.Normalize()
 		if err := cfg.Validate(); err != nil {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: err.Error()})
@@ -201,9 +211,22 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
+	crit := track.ResolveRelevance(r.Context(), s.client, cfg.AppID, cfg.Markets[0].Country, cfg.Relevance)
+
 	total := track.Result{At: time.Now().UTC()}
 	for _, m := range markets {
-		res, err := track.RunOnce(r.Context(), s.st, cfg.AppID, m.Country, m.Keywords, cfg.SearchLimit, s.client, runDelay, nil)
+		rc := track.RunConfig{
+			AppID:       cfg.AppID,
+			Country:     m.Country,
+			Keywords:    m.Keywords,
+			SearchLimit: cfg.SearchLimit,
+			StoreTop:    cfg.StoreTop,
+			Weights:     metrics.DefaultWeights,
+			Relevance:   crit,
+			Client:      s.client,
+			Delay:       runDelay,
+		}
+		res, err := track.RunOnce(r.Context(), s.st, rc, nil)
 		total.Stored += res.Stored
 		total.Failures += res.Failures
 		if err != nil {

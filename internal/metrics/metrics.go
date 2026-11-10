@@ -84,10 +84,10 @@ type Scores struct {
 // list in rank order; term is the searched keyword; resultCount is the API's
 // reported total (for Narrow); now is the reference time for age; w are the
 // difficulty weights (use DefaultWeights for the standard blend).
-func Compute(results []itunes.App, term string, resultCount int, now time.Time, w Weights, crit RelevanceCriteria) Scores {
+func Compute(results []itunes.App, ownAppID int64, term string, resultCount int, now time.Time, w Weights, crit RelevanceCriteria) Scores {
 	return Scores{
 		Difficulty: Difficulty(results, term, now, w),
-		Relevance:  Relevance(results, crit),
+		Relevance:  Relevance(results, ownAppID, crit),
 		Narrow:     Narrow(resultCount),
 	}
 }
@@ -139,8 +139,9 @@ func Difficulty(results []itunes.App, term string, now time.Time, w Weights) flo
 }
 
 // Relevance counts how many of the top results are the same type as our app
-// (0–10). See the package doc.
-func Relevance(results []itunes.App, crit RelevanceCriteria) float64 {
+// (0–10), excluding our own app (ownAppID) so the number reflects the
+// competitive field, not ourselves. See the package doc.
+func Relevance(results []itunes.App, ownAppID int64, crit RelevanceCriteria) float64 {
 	top := results
 	if len(top) > resultWindow {
 		top = top[:resultWindow]
@@ -161,6 +162,9 @@ func Relevance(results []itunes.App, crit RelevanceCriteria) float64 {
 
 	count := 0
 	for _, a := range top {
+		if a.ID == ownAppID {
+			continue // don't count ourselves
+		}
 		if sameType(a, genreSet, foldedTerms) {
 			count++
 		}

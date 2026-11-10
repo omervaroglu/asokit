@@ -16,6 +16,7 @@ import (
 
 	"github.com/omervaroglu/asokit/internal/config"
 	"github.com/omervaroglu/asokit/internal/itunes"
+	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/rank"
 	"github.com/omervaroglu/asokit/internal/store"
 	"github.com/omervaroglu/asokit/internal/track"
@@ -44,11 +45,26 @@ func cmdRun(ctx context.Context, args []string) error {
 	defer func() { _ = db.Close() }()
 
 	client := itunes.New()
+	// Resolve the relevance criteria once (one Lookup at most), outside the
+	// per-market loop; the genre is effectively the same across storefronts.
+	crit := track.ResolveRelevance(ctx, client, cfg.AppID, cfg.Markets[0].Country, cfg.Relevance)
+
 	var totalStored, totalFailures int
 	var at time.Time
 	for _, m := range cfg.Markets {
 		fmt.Printf("[%s]\n", strings.ToUpper(m.Country))
-		res, err := track.RunOnce(ctx, db, cfg.AppID, m.Country, m.Keywords, cfg.SearchLimit, client, *delay,
+		rc := track.RunConfig{
+			AppID:       cfg.AppID,
+			Country:     m.Country,
+			Keywords:    m.Keywords,
+			SearchLimit: cfg.SearchLimit,
+			StoreTop:    cfg.StoreTop,
+			Weights:     metrics.DefaultWeights,
+			Relevance:   crit,
+			Client:      client,
+			Delay:       *delay,
+		}
+		res, err := track.RunOnce(ctx, db, rc,
 			func(keyword string, r rank.Result, rerr error) {
 				if rerr != nil {
 					fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, rerr)

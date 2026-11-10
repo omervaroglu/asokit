@@ -13,6 +13,7 @@ import (
 const (
 	DefaultCountry     = "us"
 	DefaultSearchLimit = 200 // iTunes Search API hard maximum.
+	DefaultStoreTop    = 50  // how many top results to persist per snapshot.
 )
 
 // Market is one storefront to track: a country plus its own keyword list. The
@@ -24,12 +25,38 @@ type Market struct {
 	Keywords []string `yaml:"keywords" json:"keywords"`
 }
 
+// Relevance defines what makes a search result "the same type" as the tracked
+// app, feeding the relevance metric. Both fields are optional; when GenreIDs is
+// empty it defaults to the app's own App Store category (resolved at run time).
+type Relevance struct {
+	// GenreIDs are numeric App Store category ids (as strings, as the API
+	// returns them), e.g. ["6015"] for Finance.
+	GenreIDs []string `yaml:"genre_ids,omitempty" json:"genre_ids,omitempty"`
+	// TitleTerms are words whose presence in a result's title also makes it
+	// count as the same type.
+	TitleTerms []string `yaml:"title_terms,omitempty" json:"title_terms,omitempty"`
+}
+
+// Competitor is another app tracked alongside ours; its position per keyword is
+// derived from the stored results, so it is only visible down to store_top.
+type Competitor struct {
+	ID   int64  `yaml:"id" json:"id"`
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+}
+
 // Config describes which app and markets to track.
 type Config struct {
 	// AppID is the numeric App Store identifier, shared across markets.
 	AppID int64 `yaml:"app_id" json:"app_id"`
 	// SearchLimit caps how many results to request per term (max 200).
 	SearchLimit int `yaml:"search_limit" json:"search_limit"`
+	// StoreTop is how many of the top results to persist per snapshot (for
+	// competition metrics and competitor tracking). Clamped to SearchLimit.
+	StoreTop int `yaml:"store_top" json:"store_top"`
+	// Relevance configures the relevance metric. Optional.
+	Relevance Relevance `yaml:"relevance,omitempty" json:"relevance"`
+	// Competitors are other apps to track alongside ours. Optional.
+	Competitors []Competitor `yaml:"competitors,omitempty" json:"competitors,omitempty"`
 	// Markets is the list of storefronts to track.
 	Markets []Market `yaml:"markets" json:"markets"`
 
@@ -83,6 +110,14 @@ func (c *Config) Normalize() {
 	}
 	if c.SearchLimit > DefaultSearchLimit {
 		c.SearchLimit = DefaultSearchLimit
+	}
+
+	// store_top defaults to 50 and can never exceed how many results we fetch.
+	if c.StoreTop <= 0 {
+		c.StoreTop = DefaultStoreTop
+	}
+	if c.StoreTop > c.SearchLimit {
+		c.StoreTop = c.SearchLimit
 	}
 
 	// Fold a legacy flat config (top-level country + keywords) into one market.
@@ -161,6 +196,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: duplicate market %q", m.Country)
 		}
 		seen[m.Country] = true
+	}
+	for _, comp := range c.Competitors {
+		if comp.ID <= 0 {
+			return fmt.Errorf("config: competitor %q must have a positive id", comp.Name)
+		}
+		if comp.ID == c.AppID {
+			return fmt.Errorf("config: competitor id %d is the tracked app itself", comp.ID)
+		}
 	}
 	return nil
 }

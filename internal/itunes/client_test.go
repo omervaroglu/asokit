@@ -82,6 +82,47 @@ func TestSearchParsesMetricFields(t *testing.T) {
 	}
 }
 
+func TestLookup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("id"); got != "42" {
+			t.Errorf("id = %q, want 42", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resultCount":1,"results":[{
+			"trackId":42,"trackName":"Mine","primaryGenreName":"Finance",
+			"genreIds":["6015"],"version":"1.1.8",
+			"currentVersionReleaseDate":"2026-10-01T00:00:00Z"}]}`))
+	}))
+	defer srv.Close()
+
+	old := LookupURL
+	LookupURL = srv.URL
+	defer func() { LookupURL = old }()
+
+	app, err := New().Lookup(context.Background(), 42, "us")
+	if err != nil {
+		t.Fatalf("Lookup error: %v", err)
+	}
+	if app.ID != 42 || app.Version != "1.1.8" || len(app.GenreIDs) != 1 || app.GenreIDs[0] != "6015" {
+		t.Errorf("unexpected lookup result: %+v", app)
+	}
+}
+
+func TestLookupNoResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"resultCount":0,"results":[]}`))
+	}))
+	defer srv.Close()
+
+	old := LookupURL
+	LookupURL = srv.URL
+	defer func() { LookupURL = old }()
+
+	if _, err := New().Lookup(context.Background(), 999, "us"); err == nil {
+		t.Fatal("expected an error for an empty lookup result")
+	}
+}
+
 func TestSearchRateLimited(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

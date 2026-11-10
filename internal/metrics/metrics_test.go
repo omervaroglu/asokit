@@ -10,6 +10,9 @@ import (
 
 var refNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// noOwnApp is an id no test fixture uses, so nothing is excluded as "ourselves".
+const noOwnApp int64 = -1
+
 func approx(a, b float64) bool { return math.Abs(a-b) < 0.1 }
 
 // Difficulty is tested one sub-score at a time by zeroing the other weights, so
@@ -85,8 +88,20 @@ func TestRelevance(t *testing.T) {
 		{Name: "Some Game", GenreIDs: []string{"6014"}},      // neither
 		{Name: "Beta", GenreIDs: []string{"7000", "6015"}},   // genre match (second id)
 	}
-	if got := Relevance(apps, crit); got != 3 {
+	if got := Relevance(apps, noOwnApp, crit); got != 3 {
 		t.Errorf("Relevance = %v, want 3", got)
+	}
+}
+
+func TestRelevanceExcludesOwnApp(t *testing.T) {
+	crit := RelevanceCriteria{GenreIDs: []string{"6015"}}
+	apps := []itunes.App{
+		{ID: 42, GenreIDs: []string{"6015"}}, // us — must not be counted
+		{ID: 7, GenreIDs: []string{"6015"}},  // competitor, same genre
+		{ID: 8, GenreIDs: []string{"6015"}},  // competitor, same genre
+	}
+	if got := Relevance(apps, 42, crit); got != 2 {
+		t.Errorf("Relevance = %v, want 2 (own app excluded)", got)
 	}
 }
 
@@ -94,9 +109,9 @@ func TestRelevanceCountsAtMostTopWindow(t *testing.T) {
 	crit := RelevanceCriteria{GenreIDs: []string{"6015"}}
 	apps := make([]itunes.App, 15)
 	for i := range apps {
-		apps[i] = itunes.App{GenreIDs: []string{"6015"}}
+		apps[i] = itunes.App{ID: int64(i + 1), GenreIDs: []string{"6015"}}
 	}
-	if got := Relevance(apps, crit); got != resultWindow {
+	if got := Relevance(apps, noOwnApp, crit); got != resultWindow {
 		t.Errorf("Relevance = %v, want %d (capped at top window)", got, resultWindow)
 	}
 }
@@ -117,7 +132,7 @@ func TestNarrow(t *testing.T) {
 
 func TestCompute(t *testing.T) {
 	apps := []itunes.App{{Name: "sleep", RatingCount: 100, GenreIDs: []string{"6015"}, ReleaseDate: "2024-01-01"}}
-	got := Compute(apps, "sleep", 180, refNow, DefaultWeights, RelevanceCriteria{GenreIDs: []string{"6015"}})
+	got := Compute(apps, noOwnApp, "sleep", 180, refNow, DefaultWeights, RelevanceCriteria{GenreIDs: []string{"6015"}})
 	if got.Difficulty <= 0 || got.Difficulty > 100 {
 		t.Errorf("Difficulty out of range: %v", got.Difficulty)
 	}

@@ -9,7 +9,9 @@ import (
 	"net"
 	"time"
 
+	"github.com/omervaroglu/asokit/internal/config"
 	"github.com/omervaroglu/asokit/internal/itunes"
+	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/rank"
 	"github.com/omervaroglu/asokit/internal/store"
 )
@@ -28,31 +30,42 @@ type Result struct {
 	At       time.Time `json:"at"`
 }
 
-// RunOnce fetches and stores the current position for every keyword of one
-// market (appID + country), recording all snapshots under a single timestamp.
-// progress, if non-nil, is called after each keyword (err set when it failed).
+// RunConfig bundles everything one market's run needs. It keeps RunOnce's
+// signature small as the feature set grew (search limit, stored results,
+// metric weights and relevance criteria).
+type RunConfig struct {
+	AppID       int64
+	Country     string
+	Keywords    []string
+	SearchLimit int
+	StoreTop    int                       // how many top results to persist
+	Weights     metrics.Weights           // difficulty weights
+	Relevance   metrics.RelevanceCriteria // resolved once by the caller
+	Client      *itunes.Client
+	Delay       time.Duration
+}
+
+// RunOnce fetches the current results for every keyword of one market, computes
+// the competition/relevance metrics, and stores a snapshot plus its top-N
+// results under a single timestamp. progress, if non-nil, is called after each
+// keyword (err set when it failed).
 func RunOnce(
 	ctx context.Context,
 	st *store.Store,
-	appID int64,
-	country string,
-	keywords []string,
-	searchLimit int,
-	client *itunes.Client,
-	delay time.Duration,
+	rc RunConfig,
 	progress func(keyword string, res rank.Result, err error),
 ) (Result, error) {
 	now := time.Now().UTC()
 	out := Result{At: now}
 
-	for i, keyword := range keywords {
+	for i, keyword := range rc.Keywords {
 		if i > 0 {
-			if err := sleep(ctx, delay); err != nil {
+			if err := sleep(ctx, rc.Delay); err != nil {
 				return out, err
 			}
 		}
 
-		results, err := Search(ctx, client, keyword, country, searchLimit)
+		results, err := Search(ctx, rc.Client, keyword, rc.Country, rc.SearchLimit)
 		if err != nil {
 			out.Failures++
 			if progress != nil {
@@ -61,16 +74,26 @@ func RunOnce(
 			continue
 		}
 
-		res := rank.Find(appID, results)
-		if err := st.Insert(store.Snapshot{
+		res := rank.Find(rc.AppID, results)
+
+		// Metrics are computed from the full fetched window; only storage is
+		// truncated to StoreTop, so a small StoreTop never degrades the scores.
+		scores := metrics.Compute(results, rc.AppID, keyword, res.ResultCount, now, rc.Weights, rc.Relevance)
+		diff, rel, narrow := scores.Difficulty, scores.Relevance, scores.Narrow
+
+		snap := store.Snapshot{
 			Timestamp:   now,
-			AppID:       appID,
-			Country:     country,
+			AppID:       rc.AppID,
+			Country:     rc.Country,
 			Keyword:     keyword,
 			Position:    res.Position,
 			Found:       res.Found,
 			ResultCount: res.ResultCount,
-		}); err != nil {
+			Difficulty:  &diff,
+			Relevance:   &rel,
+			Narrow:      &narrow,
+		}
+		if _, err := st.InsertSnapshot(snap, topResults(results, rc.StoreTop)); err != nil {
 			return out, err
 		}
 		out.Stored++
@@ -79,6 +102,42 @@ func RunOnce(
 		}
 	}
 	return out, nil
+}
+
+// topResults converts the first n search results into stored-result rows,
+// numbering positions from 1.
+func topResults(apps []itunes.App, n int) []store.Result {
+	if n > len(apps) {
+		n = len(apps)
+	}
+	out := make([]store.Result, 0, n)
+	for i := 0; i < n; i++ {
+		a := apps[i]
+		out = append(out, store.Result{
+			Position:    i + 1,
+			TrackID:     a.ID,
+			Name:        a.Name,
+			RatingCount: a.RatingCount,
+			RatingAvg:   a.RatingAvg,
+			Genre:       a.Genre,
+			ReleaseDate: a.ReleaseDate,
+		})
+	}
+	return out
+}
+
+// ResolveRelevance builds the relevance criteria for a run. When the config
+// supplies no genre ids it resolves the tracked app's own category via a single
+// Lookup. A lookup failure is non-fatal — relevance degrades to whatever title
+// terms were configured rather than failing the run.
+func ResolveRelevance(ctx context.Context, client *itunes.Client, appID int64, country string, rel config.Relevance) metrics.RelevanceCriteria {
+	crit := metrics.RelevanceCriteria{GenreIDs: rel.GenreIDs, TitleTerms: rel.TitleTerms}
+	if len(crit.GenreIDs) == 0 {
+		if app, err := client.Lookup(ctx, appID, country); err == nil {
+			crit.GenreIDs = app.GenreIDs
+		}
+	}
+	return crit
 }
 
 // Search calls the iTunes client, retrying with exponential backoff on

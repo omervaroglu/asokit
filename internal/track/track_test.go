@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/omervaroglu/asokit/internal/itunes"
+	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/store"
 )
 
@@ -35,7 +36,12 @@ func TestRunOnce(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 
-	res, err := RunOnce(context.Background(), st, 42, "us", []string{"a", "b"}, 50, itunes.New(), 0, nil)
+	rc := RunConfig{
+		AppID: 42, Country: "us", Keywords: []string{"a", "b"},
+		SearchLimit: 50, StoreTop: 50, Weights: metrics.DefaultWeights,
+		Client: itunes.New(), Delay: 0,
+	}
+	res, err := RunOnce(context.Background(), st, rc, nil)
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -56,6 +62,76 @@ func TestRunOnce(t *testing.T) {
 	}
 	if got := byKeyword["b"]; got.Found {
 		t.Errorf("keyword b should be not-found, got %+v", got)
+	}
+}
+
+// TestRunOnceStoresResultsAndMetrics checks the A-side wiring end to end: the
+// top-N results are persisted (truncated to StoreTop) and the snapshot carries
+// computed metrics.
+func TestRunOnceStoresResultsAndMetrics(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Three results; our app (id 42) is #2. Rich fields so metrics compute.
+		_, _ = w.Write([]byte(`{"resultCount":3,"results":[
+			{"trackId":1,"trackName":"Rival","userRatingCount":1000,"averageUserRating":4.5,"primaryGenreName":"Finance","genreIds":["6015"],"releaseDate":"2019-01-01T00:00:00Z"},
+			{"trackId":42,"trackName":"Mine","userRatingCount":10,"primaryGenreName":"Finance","genreIds":["6015"],"releaseDate":"2024-01-01T00:00:00Z"},
+			{"trackId":2,"trackName":"Other","userRatingCount":5,"primaryGenreName":"Games","genreIds":["6014"],"releaseDate":"2025-01-01T00:00:00Z"}]}`))
+	}))
+	defer srv.Close()
+
+	old := itunes.BaseURL
+	itunes.BaseURL = srv.URL
+	defer func() { itunes.BaseURL = old }()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rc := RunConfig{
+		AppID: 42, Country: "us", Keywords: []string{"loan"},
+		SearchLimit: 200, StoreTop: 2, // store only the top 2 of 3
+		Weights:   metrics.DefaultWeights,
+		Relevance: metrics.RelevanceCriteria{GenreIDs: []string{"6015"}},
+		Client:    itunes.New(),
+	}
+	if _, err := RunOnce(context.Background(), st, rc, nil); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	latest, err := st.Latest(42, "us")
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if len(latest) != 1 {
+		t.Fatalf("got %d snapshots, want 1", len(latest))
+	}
+	snap := latest[0]
+	if snap.Position != 2 || !snap.Found {
+		t.Errorf("position = %d found = %v, want #2 found", snap.Position, snap.Found)
+	}
+	if snap.Difficulty == nil || snap.Relevance == nil || snap.Narrow == nil {
+		t.Fatalf("metrics should be set: %+v", snap)
+	}
+	if *snap.Narrow != true { // 3 < 200
+		t.Errorf("Narrow = %v, want true", *snap.Narrow)
+	}
+	if *snap.Relevance != 1 { // one Finance competitor (id 1); our app excluded, Games not counted
+		t.Errorf("Relevance = %v, want 1", *snap.Relevance)
+	}
+
+	results, err := st.Results(snap.ID)
+	if err != nil {
+		t.Fatalf("Results: %v", err)
+	}
+	if len(results) != 2 { // truncated to StoreTop=2
+		t.Fatalf("stored %d results, want 2 (StoreTop)", len(results))
+	}
+	if results[0].TrackID != 1 || results[0].Position != 1 || results[1].TrackID != 42 {
+		t.Errorf("unexpected stored results: %+v", results)
+	}
+	if results[0].RatingCount != 1000 || results[0].Genre != "Finance" {
+		t.Errorf("result[0] fields not captured: %+v", results[0])
 	}
 }
 
