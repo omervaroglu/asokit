@@ -138,6 +138,38 @@ func TestInsertSnapshotWithResultsAndMetrics(t *testing.T) {
 	}
 }
 
+func TestCompetitorPositions(t *testing.T) {
+	s := newTestStore(t)
+	id, err := s.InsertSnapshot(
+		Snapshot{AppID: 1, Country: "us", Keyword: "k", Position: 5, Found: true, ResultCount: 200},
+		[]Result{
+			{Position: 1, TrackID: 100, Name: "A"},
+			{Position: 2, TrackID: 200, Name: "B"},
+			{Position: 3, TrackID: 300, Name: "C"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("InsertSnapshot: %v", err)
+	}
+
+	// 200 is stored (→ #2), 999 is not among the results (→ absent).
+	got, err := s.CompetitorPositions(id, []int64{200, 999})
+	if err != nil {
+		t.Fatalf("CompetitorPositions: %v", err)
+	}
+	if got[200] != 2 {
+		t.Errorf("competitor 200 position = %d, want 2", got[200])
+	}
+	if _, ok := got[999]; ok {
+		t.Errorf("competitor 999 should be absent, got %v", got[999])
+	}
+
+	// No ids → empty map, no query.
+	if m, err := s.CompetitorPositions(id, nil); err != nil || len(m) != 0 {
+		t.Errorf("empty ids = (%v, %v), want ({}, nil)", m, err)
+	}
+}
+
 func TestPlainInsertLeavesMetricsNull(t *testing.T) {
 	s := newTestStore(t)
 	must(t, s.Insert(Snapshot{AppID: 1, Country: "us", Keyword: "k", Position: 1, Found: true, ResultCount: 200}))

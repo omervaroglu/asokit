@@ -214,6 +214,37 @@ func (s *Store) InsertSnapshot(snap Snapshot, results []Result) (int64, error) {
 	return id, nil
 }
 
+// CompetitorPositions returns, for one snapshot, the stored position of each of
+// the given track ids that appears among the snapshot's results. Ids outside the
+// stored top-N are simply absent from the map.
+func (s *Store) CompetitorPositions(snapshotID int64, trackIDs []int64) (map[int64]int, error) {
+	out := make(map[int64]int, len(trackIDs))
+	if len(trackIDs) == 0 {
+		return out, nil
+	}
+	want := make(map[int64]bool, len(trackIDs))
+	for _, id := range trackIDs {
+		want[id] = true
+	}
+
+	rows, err := s.db.Query(`SELECT track_id, position FROM results WHERE snapshot_id = ?`, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("querying competitor positions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var trackID int64
+		var position int
+		if err := rows.Scan(&trackID, &position); err != nil {
+			return nil, fmt.Errorf("scanning competitor position: %w", err)
+		}
+		if want[trackID] {
+			out[trackID] = position
+		}
+	}
+	return out, rows.Err()
+}
+
 // Results returns the stored results for a snapshot, ordered by position.
 func (s *Store) Results(snapshotID int64) ([]Result, error) {
 	rows, err := s.db.Query(

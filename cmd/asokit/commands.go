@@ -122,6 +122,7 @@ func cmdReport(args []string) error {
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
 	country := fs.String("country", "", "storefront to report (default: first configured market)")
 	trend := fs.Bool("trend", false, "show movement versus the previous snapshot")
+	competitors := fs.Bool("competitors", false, "add a column per configured competitor with its rank")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -155,26 +156,53 @@ func cmdReport(args []string) error {
 		return nil
 	}
 
+	// Competitor columns are opt-in; their ranks come from the stored results,
+	// so a competitor below store_top shows as "—".
+	var comps []config.Competitor
+	var compIDs []int64
+	if *competitors {
+		comps = cfg.Competitors
+		for _, c := range comps {
+			compIDs = append(compIDs, c.ID)
+		}
+	}
+
 	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+	header := []string{"KEYWORD", "POSITION"}
 	if *trend {
-		_, _ = fmt.Fprintln(tw, "KEYWORD\tPOSITION\tTREND\tAS OF")
-	} else {
-		_, _ = fmt.Fprintln(tw, "KEYWORD\tPOSITION\tAS OF")
+		header = append(header, "TREND")
 	}
+	header = append(header, "DIFF", "REL", "RESULTS")
+	for _, c := range comps {
+		header = append(header, competitorHeader(c))
+	}
+	header = append(header, "AS OF")
+	_, _ = fmt.Fprintln(tw, strings.Join(header, "\t"))
+
 	for _, s := range latest {
-		pos := positionLabel(s.Position, s.Found)
-		asOf := s.Timestamp.Format("2006-01-02 15:04")
+		row := []string{s.Keyword, positionLabel(s.Position, s.Found)}
 		if *trend {
 			prevPos, prevFound, err := db.PreviousPosition(cfg.AppID, market.Country, s.Keyword)
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Keyword, pos,
-				trendLabel(s, prevPos, prevFound), asOf)
-		} else {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Keyword, pos, asOf)
+			row = append(row, trendLabel(s, prevPos, prevFound))
 		}
+		row = append(row, difficultyLabel(s.Difficulty), relevanceLabel(s.Relevance), resultsLabel(s.ResultCount))
+
+		if len(comps) > 0 {
+			positions, err := db.CompetitorPositions(s.ID, compIDs)
+			if err != nil {
+				return err
+			}
+			for _, c := range comps {
+				row = append(row, competitorRank(positions, c.ID))
+			}
+		}
+		row = append(row, s.Timestamp.Format("2006-01-02 15:04"))
+		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
 	}
 	return tw.Flush()
 }
@@ -211,7 +239,7 @@ func cmdExport(args []string) error {
 
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
-	if err := cw.Write([]string{"timestamp", "app_id", "country", "keyword", "position", "found", "result_count"}); err != nil {
+	if err := cw.Write([]string{"timestamp", "app_id", "country", "keyword", "position", "found", "result_count", "difficulty", "relevance", "narrow"}); err != nil {
 		return err
 	}
 	for _, s := range snaps {
@@ -223,6 +251,9 @@ func cmdExport(args []string) error {
 			strconv.Itoa(s.Position),
 			strconv.FormatBool(s.Found),
 			strconv.Itoa(s.ResultCount),
+			csvFloat(s.Difficulty),
+			csvFloat(s.Relevance),
+			csvBool(s.Narrow),
 		}
 		if err := cw.Write(rec); err != nil {
 			return err
@@ -318,6 +349,64 @@ func positionLabel(position int, found bool) string {
 		return "not in top results"
 	}
 	return "#" + strconv.Itoa(position)
+}
+
+// difficultyLabel and relevanceLabel render the nullable metrics, showing "—"
+// for snapshots taken before the metrics existed.
+func difficultyLabel(d *float64) string {
+	if d == nil {
+		return "—"
+	}
+	return strconv.FormatFloat(*d, 'f', 0, 64)
+}
+
+func relevanceLabel(r *float64) string {
+	if r == nil {
+		return "—"
+	}
+	return strconv.FormatFloat(*r, 'f', 0, 64)
+}
+
+// resultsLabel shows the result count, rendering the API's 200 ceiling as
+// "200+" since it is a cap, not a true total.
+func resultsLabel(count int) string {
+	if count >= itunes.MaxResults {
+		return "200+"
+	}
+	return strconv.Itoa(count)
+}
+
+// competitorHeader is the column title for a competitor: its name, or its id
+// when unnamed.
+func competitorHeader(c config.Competitor) string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return strconv.FormatInt(c.ID, 10)
+}
+
+// competitorRank renders a competitor's stored rank, or "—" when it is below
+// store_top (and so not tracked for this keyword).
+func competitorRank(positions map[int64]int, id int64) string {
+	if pos, ok := positions[id]; ok {
+		return "#" + strconv.Itoa(pos)
+	}
+	return "—"
+}
+
+// csvFloat and csvBool render nullable metrics for CSV: empty cell when unset.
+func csvFloat(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*v, 'f', 2, 64)
+}
+
+func csvBool(v *bool) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatBool(*v)
 }
 
 // trendLabel describes how the latest position moved versus the previous one.
