@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -79,6 +81,129 @@ func TestAll(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("got %d, want 2", len(all))
+	}
+}
+
+func TestInsertSnapshotWithResultsAndMetrics(t *testing.T) {
+	s := newTestStore(t)
+
+	diff, rel := 72.5, 6.0
+	narrow := true
+	id, err := s.InsertSnapshot(
+		Snapshot{
+			AppID: 1, Country: "us", Keyword: "sleep", Position: 3, Found: true,
+			ResultCount: 180, Difficulty: &diff, Relevance: &rel, Narrow: &narrow,
+		},
+		[]Result{
+			{Position: 1, TrackID: 10, Name: "Alpha", RatingCount: 1000, RatingAvg: 4.5, Genre: "Health", ReleaseDate: "2019-01-01T00:00:00Z"},
+			{Position: 2, TrackID: 20, Name: "Beta", RatingCount: 50, RatingAvg: 3.9, Genre: "Health", ReleaseDate: "2022-06-01T00:00:00Z"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("InsertSnapshot: %v", err)
+	}
+	if id <= 0 {
+		t.Fatalf("snapshot id = %d, want positive", id)
+	}
+
+	// Metrics round-trip through Latest.
+	latest, err := s.Latest(1, "us")
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if len(latest) != 1 {
+		t.Fatalf("got %d snapshots, want 1", len(latest))
+	}
+	got := latest[0]
+	if got.Difficulty == nil || *got.Difficulty != diff {
+		t.Errorf("Difficulty = %v, want %v", got.Difficulty, diff)
+	}
+	if got.Relevance == nil || *got.Relevance != rel {
+		t.Errorf("Relevance = %v, want %v", got.Relevance, rel)
+	}
+	if got.Narrow == nil || *got.Narrow != true {
+		t.Errorf("Narrow = %v, want true", got.Narrow)
+	}
+
+	// Results round-trip, ordered by position.
+	results, err := s.Results(id)
+	if err != nil {
+		t.Fatalf("Results: %v", err)
+	}
+	if len(results) != 2 || results[0].TrackID != 10 || results[1].TrackID != 20 {
+		t.Fatalf("results = %+v, want track ids [10 20] in order", results)
+	}
+	if results[0].RatingCount != 1000 || results[0].RatingAvg != 4.5 || results[0].Genre != "Health" {
+		t.Errorf("result[0] = %+v, unexpected fields", results[0])
+	}
+}
+
+func TestPlainInsertLeavesMetricsNull(t *testing.T) {
+	s := newTestStore(t)
+	must(t, s.Insert(Snapshot{AppID: 1, Country: "us", Keyword: "k", Position: 1, Found: true, ResultCount: 200}))
+	latest, err := s.Latest(1, "us")
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	got := latest[0]
+	if got.Difficulty != nil || got.Relevance != nil || got.Narrow != nil {
+		t.Errorf("metrics should be nil for a plain Insert, got %v %v %v", got.Difficulty, got.Relevance, got.Narrow)
+	}
+}
+
+// TestMigrationUpgradesExistingDatabase simulates a database created before the
+// metrics feature: a snapshots table without the metric columns and no results
+// table. Opening it must add the columns and keep existing rows intact.
+func TestMigrationUpgradesExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// Build the pre-metrics schema directly and seed a row.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE snapshots (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, app_id INTEGER NOT NULL,
+		country TEXT NOT NULL, keyword TEXT NOT NULL, position INTEGER NOT NULL,
+		found INTEGER NOT NULL, result_count INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO snapshots (ts, app_id, country, keyword, position, found, result_count)
+		VALUES ('2026-01-01T00:00:00Z', 1, 'us', 'legacy', 4, 1, 200)`); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	_ = raw.Close()
+
+	// Opening through the store runs the migration.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open (migrate): %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Old row survives and new columns read back as NULL (nil).
+	latest, err := s.Latest(1, "us")
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if len(latest) != 1 || latest[0].Keyword != "legacy" || latest[0].Position != 4 {
+		t.Fatalf("legacy row not preserved: %+v", latest)
+	}
+	if latest[0].Difficulty != nil || latest[0].Narrow != nil {
+		t.Errorf("legacy metrics should be nil, got %v %v", latest[0].Difficulty, latest[0].Narrow)
+	}
+
+	// Migration is idempotent: a second Open must not fail or duplicate columns.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	_ = s2.Close()
+
+	// The new column accepts a value now.
+	diff := 10.0
+	if _, err := s.InsertSnapshot(Snapshot{AppID: 1, Country: "us", Keyword: "new", Position: 1, Found: true, ResultCount: 200, Difficulty: &diff}, nil); err != nil {
+		t.Fatalf("InsertSnapshot after migrate: %v", err)
 	}
 }
 
