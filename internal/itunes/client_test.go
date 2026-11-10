@@ -39,6 +39,49 @@ func TestSearchParsesResults(t *testing.T) {
 	}
 }
 
+func TestSearchParsesMetricFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resultCount":1,"results":[{
+			"trackId":111,"trackName":"App One",
+			"userRatingCount":12345,"averageUserRating":4.6,
+			"primaryGenreName":"Finance","genreIds":["6015","6007"],
+			"releaseDate":"2020-01-02T00:00:00Z",
+			"currentVersionReleaseDate":"2026-10-01T00:00:00Z",
+			"sellerName":"Acme Inc."}]}`))
+	}))
+	defer srv.Close()
+
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	got, err := New().Search(context.Background(), "x", "us", 10)
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1", len(got))
+	}
+	a := got[0]
+	switch {
+	case a.RatingCount != 12345:
+		t.Errorf("RatingCount = %d, want 12345", a.RatingCount)
+	case a.RatingAvg != 4.6:
+		t.Errorf("RatingAvg = %v, want 4.6", a.RatingAvg)
+	case a.Genre != "Finance":
+		t.Errorf("Genre = %q, want Finance", a.Genre)
+	case len(a.GenreIDs) != 2 || a.GenreIDs[0] != "6015" || a.GenreIDs[1] != "6007":
+		t.Errorf("GenreIDs = %v, want [6015 6007]", a.GenreIDs)
+	case a.ReleaseDate != "2020-01-02T00:00:00Z":
+		t.Errorf("ReleaseDate = %q", a.ReleaseDate)
+	case a.CurrentVersionReleaseDate != "2026-10-01T00:00:00Z":
+		t.Errorf("CurrentVersionReleaseDate = %q", a.CurrentVersionReleaseDate)
+	case a.SellerName != "Acme Inc.":
+		t.Errorf("SellerName = %q, want Acme Inc.", a.SellerName)
+	}
+}
+
 func TestSearchRateLimited(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

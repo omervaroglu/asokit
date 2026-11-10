@@ -21,10 +21,29 @@ import (
 // the client at an httptest server.
 var BaseURL = "https://itunes.apple.com/search"
 
-// App is a single search result, trimmed to the fields asokit needs.
+// App is a single search result, trimmed to the fields asokit needs. Beyond
+// identity (ID/Name), these fields feed the competition and relevance metrics;
+// the Search API already returns them, so capturing them needs no extra request.
 type App struct {
 	ID   int64  `json:"trackId"`
 	Name string `json:"trackName"`
+
+	// RatingCount is the number of ratings for the current release line
+	// (userRatingCount). A proxy for how established a competitor is.
+	RatingCount int `json:"userRatingCount"`
+	// RatingAvg is the average star rating (averageUserRating), 0–5.
+	RatingAvg float64 `json:"averageUserRating"`
+	// Genre is the primary App Store category name, e.g. "Finance".
+	Genre string `json:"primaryGenreName"`
+	// GenreIDs are the numeric category ids as strings, e.g. ["6015","6007"].
+	// The API returns these as strings, so keep them as strings.
+	GenreIDs []string `json:"genreIds"`
+	// ReleaseDate is when the app first shipped (RFC3339 string from the API).
+	ReleaseDate string `json:"releaseDate"`
+	// CurrentVersionReleaseDate is when the current version shipped.
+	CurrentVersionReleaseDate string `json:"currentVersionReleaseDate"`
+	// SellerName is the developer/publisher name.
+	SellerName string `json:"sellerName"`
 }
 
 type searchResponse struct {
