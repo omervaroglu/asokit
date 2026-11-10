@@ -33,4 +33,10 @@ adheres to [Semantic Versioning](https://semver.org/).
   rate limiting.
 - CI (vet, test, build, lint) and a daily-tracking workflow template.
 
+### Fixed
+- Retry transient network failures, not just rate limiting: server errors
+  (HTTP 5xx) and request timeouts / "context deadline exceeded" now get the
+  same exponential backoff, so a keyword is no longer dropped from a run over a
+  single flaky request. A caller-cancelled context still stops immediately.
+
 [Unreleased]: https://github.com/omervaroglu/asokit/commits/main

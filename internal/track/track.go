@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/omervaroglu/asokit/internal/itunes"
@@ -13,9 +14,12 @@ import (
 	"github.com/omervaroglu/asokit/internal/store"
 )
 
-// maxRetries is how many times a rate-limited request is retried before giving
-// up. Delays grow exponentially: 2s, 4s, 8s.
+// maxRetries is how many times a transient failure is retried before giving up.
 const maxRetries = 3
+
+// baseBackoff is the first retry delay; it doubles each attempt (2s, 4s, 8s).
+// It is a var, not a const, so tests can shrink it and not sleep for seconds.
+var baseBackoff = 2 * time.Second
 
 // Result summarises one run.
 type Result struct {
@@ -77,10 +81,12 @@ func RunOnce(
 	return out, nil
 }
 
-// Search calls the iTunes client, retrying with exponential backoff when the
-// API signals rate limiting. Non-throttle errors are returned immediately.
+// Search calls the iTunes client, retrying with exponential backoff on
+// transient failures: rate limiting (429/403), server errors (5xx) and
+// temporary network problems (timeouts, "context deadline exceeded" from the
+// client's own request timeout). Other errors are returned immediately.
 func Search(ctx context.Context, c *itunes.Client, term, country string, limit int) ([]itunes.App, error) {
-	backoff := 2 * time.Second
+	backoff := baseBackoff
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -89,20 +95,44 @@ func Search(ctx context.Context, c *itunes.Client, term, country string, limit i
 			return results, nil
 		}
 
-		var rl *itunes.RateLimitError
-		if !errors.As(err, &rl) {
+		if !retryable(err) {
 			return nil, err
 		}
 		lastErr = err
 		if attempt == maxRetries {
 			break
 		}
+		// sleep returns early if the caller cancelled, so a cancelled parent
+		// context stops the loop instead of being treated as a transient error.
 		if err := sleep(ctx, backoff); err != nil {
 			return nil, err
 		}
 		backoff *= 2
 	}
 	return nil, fmt.Errorf("giving up after %d retries: %w", maxRetries, lastErr)
+}
+
+// retryable reports whether err is a transient failure worth retrying. A
+// caller-cancelled context surfaces as context.Canceled, which is not
+// retryable; a per-request timeout surfaces as a net.Error timeout or
+// context.DeadlineExceeded, which is.
+func retryable(err error) bool {
+	var rl *itunes.RateLimitError
+	if errors.As(err, &rl) {
+		return true
+	}
+	var te *itunes.TransientError
+	if errors.As(err, &te) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return false
 }
 
 // sleep waits for d or returns early if the context is cancelled.

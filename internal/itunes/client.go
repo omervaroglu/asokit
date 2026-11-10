@@ -76,6 +76,11 @@ func (c *Client) Search(ctx context.Context, term, country string, limit int) ([
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
 		return nil, &RateLimitError{StatusCode: resp.StatusCode, Term: term}
 	}
+	// 5xx is a transient server-side problem; surface it as a distinct type so
+	// callers can retry it the same way they retry throttling.
+	if resp.StatusCode >= 500 {
+		return nil, &TransientError{StatusCode: resp.StatusCode, Term: term}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("itunes search %q: unexpected status %d", term, resp.StatusCode)
 	}
@@ -100,4 +105,15 @@ type RateLimitError struct {
 
 func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("itunes search %q: rate limited (status %d)", e.Term, e.StatusCode)
+}
+
+// TransientError indicates a temporary server-side failure (HTTP 5xx) that is
+// worth retrying.
+type TransientError struct {
+	StatusCode int
+	Term       string
+}
+
+func (e *TransientError) Error() string {
+	return fmt.Sprintf("itunes search %q: server error (status %d)", e.Term, e.StatusCode)
 }
