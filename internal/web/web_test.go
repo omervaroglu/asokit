@@ -98,6 +98,56 @@ func TestDataPerMarketIsolated(t *testing.T) {
 	}
 }
 
+// /api/data must carry the latest-snapshot metrics for the table columns, and
+// /api/keyword must return the stored top results plus competitor series.
+func TestDataMetricsAndKeywordDetail(t *testing.T) {
+	cfg := &config.Config{AppID: 1, SearchLimit: 200, StoreTop: 50,
+		Competitors: []config.Competitor{{ID: 7, Name: "Seven"}},
+		Markets:     []config.Market{{Country: "tr", Keywords: []string{"kira"}}},
+	}
+	s, h := newServer(t, cfg)
+
+	diff, rel := 60.0, 4.0
+	narrow := true
+	id, err := s.st.InsertSnapshot(
+		store.Snapshot{AppID: 1, Country: "tr", Keyword: "kira", Position: 2, Found: true,
+			ResultCount: 150, Difficulty: &diff, Relevance: &rel, Narrow: &narrow},
+		[]store.Result{
+			{Position: 1, TrackID: 7, Name: "Seven", RatingCount: 1200, Genre: "Finance"},
+			{Position: 2, TrackID: 1, Name: "Mine", RatingCount: 10, Genre: "Finance"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("InsertSnapshot: %v", err)
+	}
+	_ = id
+
+	var data dataResponse
+	decode(t, do(h, http.MethodGet, "/api/data?country=tr", nil), &data)
+	if len(data.Keywords) != 1 {
+		t.Fatalf("keywords = %+v", data.Keywords)
+	}
+	k := data.Keywords[0]
+	if k.Difficulty == nil || *k.Difficulty != 60 || k.Relevance == nil || *k.Relevance != 4 {
+		t.Errorf("metrics missing: diff=%v rel=%v", k.Difficulty, k.Relevance)
+	}
+	if k.ResultCount != 150 || k.Narrow == nil || *k.Narrow != true {
+		t.Errorf("result_count/narrow wrong: rc=%d narrow=%v", k.ResultCount, k.Narrow)
+	}
+
+	var detail keywordDetail
+	decode(t, do(h, http.MethodGet, "/api/keyword?country=tr&keyword=kira", nil), &detail)
+	if len(detail.Top) != 2 || detail.Top[0].TrackID != 7 || detail.Top[0].Name != "Seven" {
+		t.Fatalf("top results = %+v", detail.Top)
+	}
+	if len(detail.Competitors) != 1 || detail.Competitors[0].ID != 7 {
+		t.Fatalf("competitors = %+v", detail.Competitors)
+	}
+	if len(detail.Competitors[0].Series) != 1 || detail.Competitors[0].Series[0].Position != 1 {
+		t.Errorf("competitor series = %+v, want one point #1", detail.Competitors[0].Series)
+	}
+}
+
 func TestUninitializedData(t *testing.T) {
 	_, h := newServer(t, nil)
 	var p dataResponse

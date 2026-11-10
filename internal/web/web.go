@@ -37,6 +37,37 @@ type keywordData struct {
 	Current  *point  `json:"current"`
 	Previous *point  `json:"previous"`
 	Series   []point `json:"series"`
+
+	// Latest-snapshot metrics for the table columns (nil when not computed).
+	Difficulty  *float64 `json:"difficulty"`
+	Relevance   *float64 `json:"relevance"`
+	Narrow      *bool    `json:"narrow"`
+	ResultCount int      `json:"result_count"`
+}
+
+// resultRow is one stored competitor row in a keyword's detail view.
+type resultRow struct {
+	Position    int     `json:"position"`
+	TrackID     int64   `json:"track_id"`
+	Name        string  `json:"name"`
+	RatingCount int     `json:"rating_count"`
+	RatingAvg   float64 `json:"rating_avg"`
+	Genre       string  `json:"genre"`
+}
+
+// competitorSeries is one tracked competitor's rank-over-time for a keyword.
+type competitorSeries struct {
+	ID     int64   `json:"id"`
+	Name   string  `json:"name"`
+	Series []point `json:"series"`
+}
+
+// keywordDetail is the on-demand payload behind a keyword card: the latest
+// snapshot's top results and each competitor's series for that keyword.
+type keywordDetail struct {
+	Keyword     string             `json:"keyword"`
+	Top         []resultRow        `json:"top"`
+	Competitors []competitorSeries `json:"competitors"`
 }
 
 type dataResponse struct {
@@ -90,6 +121,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	mux.HandleFunc("/api/data", s.handleData)
+	mux.HandleFunc("/api/keyword", s.handleKeyword)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/run", s.handleRun)
 	return mux, nil
@@ -248,12 +280,14 @@ func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, err
 	}
 
 	byKeyword := make(map[string][]point, len(m.Keywords))
+	latest := make(map[string]store.Snapshot, len(m.Keywords))
 	for _, snap := range history {
 		byKeyword[snap.Keyword] = append(byKeyword[snap.Keyword], point{
 			TS:       snap.Timestamp.Format(time.RFC3339),
 			Position: snap.Position,
 			Found:    snap.Found,
 		})
+		latest[snap.Keyword] = snap // history is ts-ascending, so the last wins
 	}
 
 	out := make([]keywordData, 0, len(m.Keywords))
@@ -266,9 +300,78 @@ func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, err
 				kd.Previous = &series[n-2]
 			}
 		}
+		if snap, ok := latest[kw]; ok {
+			kd.Difficulty = snap.Difficulty
+			kd.Relevance = snap.Relevance
+			kd.Narrow = snap.Narrow
+			kd.ResultCount = snap.ResultCount
+		}
 		out = append(out, kd)
 	}
 	return out, nil
+}
+
+// handleKeyword serves the on-demand detail for one keyword: the latest
+// snapshot's top results and each competitor's rank-over-time series.
+func (s *Server) handleKeyword(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.snapshot()
+	keyword := r.URL.Query().Get("keyword")
+	resp := keywordDetail{Keyword: keyword, Top: []resultRow{}, Competitors: []competitorSeries{}}
+	if cfg == nil || keyword == "" {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	market, ok := cfg.Market(r.URL.Query().Get("country"))
+	if !ok {
+		market = cfg.Markets[0]
+	}
+
+	snap, found, err := s.st.LatestForKeyword(cfg.AppID, market.Country, keyword)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	results, err := s.st.Results(snap.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	const topN = 10
+	for i, res := range results {
+		if i >= topN {
+			break
+		}
+		resp.Top = append(resp.Top, resultRow{
+			Position: res.Position, TrackID: res.TrackID, Name: res.Name,
+			RatingCount: res.RatingCount, RatingAvg: res.RatingAvg, Genre: res.Genre,
+		})
+	}
+
+	ids := make([]int64, 0, len(cfg.Competitors))
+	for _, c := range cfg.Competitors {
+		ids = append(ids, c.ID)
+	}
+	seriesByID, err := s.st.CompetitorSeries(cfg.AppID, market.Country, keyword, ids)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, c := range cfg.Competitors {
+		cs := competitorSeries{ID: c.ID, Name: c.Name, Series: []point{}}
+		for _, pp := range seriesByID[c.ID] {
+			cs.Series = append(cs.Series, point{
+				TS: pp.Timestamp.Format(time.RFC3339), Position: pp.Position, Found: true,
+			})
+		}
+		resp.Competitors = append(resp.Competitors, cs)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

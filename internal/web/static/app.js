@@ -35,6 +35,9 @@ let CURRENT = "";      // selected market (country code)
 let VIEW = "charts";   // charts | table
 let SETUP_MODE = "first"; // first | add | edit
 let EDIT_COUNTRY = "";
+let SORT = { col: null, dir: 1 }; // table sort (col key, 1 asc / -1 desc)
+const OPEN = new Set();           // keywords whose card detail is expanded
+const DETAILS = {};               // cache: "country|keyword" -> detail payload
 
 // ---------- control bar + market tabs ---------------------------------------
 function mkBtn(label, onClick, opts = {}) {
@@ -145,6 +148,8 @@ async function loadConfig() {
   }
 }
 async function loadData() {
+  // Data changed (new market or a fresh run): stale detail payloads must go.
+  for (const k of Object.keys(DETAILS)) delete DETAILS[k];
   const res = await fetch("api/data?country=" + encodeURIComponent(CURRENT), { cache: "no-store" });
   if (!res.ok) throw new Error("HTTP " + res.status);
   DATA = await res.json();
@@ -281,21 +286,125 @@ function renderCharts() {
   }
   for (const kw of DATA.keywords) {
     const card = document.createElement("div");
-    card.className = "card";
-    const d = delta(kw.current, kw.previous);
-    const rankHTML = kw.current && kw.current.found
-      ? `<span class="rank">#${kw.current.position}</span>`
-      : `<span class="rank none">—</span>`;
-    const deltaHTML = d.label ? `<span class="delta ${d.cls}">${d.label}</span>` : "";
-    const asof = kw.current ? `as of ${fmtDateTime(kw.current.ts)}` : "no data yet";
-    card.innerHTML =
-      `<p class="kw">${escapeHTML(kw.keyword)}</p>` +
-      `<div class="rankrow">${rankHTML}${deltaHTML}</div>` +
-      chartSVG(kw.series) +
-      `<div class="asof">${asof}</div>`;
+    card.className = "card clickable";
+    card.innerHTML = cardInnerHTML(kw);
     chartsEl.appendChild(card);
     wireHover(card.querySelector("svg.chart"));
+    card.addEventListener("click", () => toggleDetail(kw.keyword));
+    if (OPEN.has(kw.keyword)) showDetail(kw, card);
   }
+}
+
+function cardInnerHTML(kw) {
+  const d = delta(kw.current, kw.previous);
+  const rankHTML = kw.current && kw.current.found
+    ? `<span class="rank">#${kw.current.position}</span>`
+    : `<span class="rank none">—</span>`;
+  const deltaHTML = d.label ? `<span class="delta ${d.cls}">${d.label}</span>` : "";
+  const asof = kw.current ? `as of ${fmtDateTime(kw.current.ts)}` : "no data yet";
+  return `<p class="kw">${escapeHTML(kw.keyword)}</p>` +
+    `<div class="rankrow">${rankHTML}${deltaHTML}</div>` +
+    chartSVG(kw.series) +
+    metricsLineHTML(kw) +
+    `<div class="asof">${asof}</div>` +
+    (OPEN.has(kw.keyword) ? `<div class="detail"><div class="loading">Loading…</div></div>` : "");
+}
+
+function metricsLineHTML(kw) {
+  const parts = [];
+  if (kw.difficulty != null) parts.push(`<span>Diff <b>${Math.round(kw.difficulty)}</b></span>`);
+  if (kw.relevance != null) parts.push(`<span>Rel <b>${Math.round(kw.relevance)}</b></span>`);
+  if (kw.result_count) parts.push(`<span>Results <b>${resultsText(kw.result_count)}</b></span>`);
+  return parts.length ? `<div class="metrics">${parts.join("")}</div>` : "";
+}
+function resultsText(count) { return count >= 200 ? "200+" : String(count); }
+
+function toggleDetail(keyword) {
+  if (OPEN.has(keyword)) OPEN.delete(keyword);
+  else OPEN.add(keyword);
+  renderCharts(); // simplest correct refresh; detail payloads are cached
+}
+
+async function showDetail(kw, card) {
+  const box = card.querySelector(".detail");
+  if (!box) return;
+  const key = CURRENT + "|" + kw.keyword;
+  let detail = DETAILS[key];
+  if (!detail) {
+    try {
+      const res = await fetch(
+        "api/keyword?country=" + encodeURIComponent(CURRENT) + "&keyword=" + encodeURIComponent(kw.keyword),
+        { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      detail = await res.json();
+      DETAILS[key] = detail;
+    } catch (e) {
+      box.innerHTML = `<div class="loading">Failed to load: ${escapeHTML(e.message)}</div>`;
+      return;
+    }
+  }
+  box.innerHTML = detailHTML(detail);
+}
+
+function detailHTML(detail) {
+  let html = "";
+  if (detail.top && detail.top.length) {
+    html += `<h4>Top ${detail.top.length}</h4><ul class="toplist">`;
+    for (const r of detail.top) {
+      const me = DATA && r.track_id === DATA.app_id ? " me" : "";
+      const meta = fmtCount(r.rating_count) + (r.genre ? " · " + escapeHTML(r.genre) : "");
+      html += `<li class="${me.trim()}"><span class="pos">#${r.position}</span>` +
+        `<span class="nm">${escapeHTML(r.name)}</span><span class="rc">${meta}</span></li>`;
+    }
+    html += `</ul>`;
+  }
+  const comps = detail.competitors || [];
+  if (comps.length) {
+    html += `<h4>Competitors</h4>`;
+    for (const c of comps) html += competitorRowHTML(c);
+  }
+  return html || `<div class="loading">No stored results for this keyword yet.</div>`;
+}
+
+function competitorRowHTML(c) {
+  const last = c.series.length ? c.series[c.series.length - 1] : null;
+  const pos = last ? "#" + last.position : "—";
+  return `<div class="comp"><span class="cname">${escapeHTML(c.name || String(c.id))}</span>` +
+    sparkSVG(c.series) + `<span class="cpos${last ? "" : " none"}">${pos}</span></div>`;
+}
+
+// sparkSVG draws a compact rank-over-time line (y inverted: a better/lower
+// position sits higher). Stretched to the row width via preserveAspectRatio.
+function sparkSVG(series) {
+  const W = 120, H = 28, pad = 3;
+  if (!series.length) {
+    return `<svg class="spark" viewBox="0 0 ${W} ${H}"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" dominant-baseline="middle" fill="var(--muted)" font-size="10">not in top results</text></svg>`;
+  }
+  const times = series.map((p) => Date.parse(p.ts));
+  const tMin = Math.min(...times), tMax = Math.max(...times);
+  const positions = series.map((p) => p.position);
+  const pMin = Math.min(...positions), pMax = Math.max(...positions);
+  const xOf = (t, i) => series.length === 1 ? W / 2
+    : (tMax === tMin ? pad + ((W - 2 * pad) * i) / (series.length - 1)
+      : pad + ((W - 2 * pad) * (t - tMin)) / (tMax - tMin));
+  const yOf = (p) => pMax === pMin ? H / 2 : pad + ((H - 2 * pad) * (p - pMin)) / (pMax - pMin);
+  let d = "";
+  series.forEach((p, i) => {
+    const x = xOf(times[i], i), y = yOf(p.position);
+    d += `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)} `;
+  });
+  const n = series.length - 1;
+  const lx = xOf(times[n], n).toFixed(1), ly = yOf(series[n].position).toFixed(1);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
+    `<path d="${d.trim()}" fill="none" stroke="var(--series)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` +
+    `<circle cx="${lx}" cy="${ly}" r="2.2" fill="var(--series)"/></svg>`;
+}
+
+function fmtCount(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return Math.round(n / 1e3) + "k";
+  return String(n);
 }
 
 // ---------- SVG small-multiple line chart (rank over time, y inverted) ------
@@ -389,19 +498,61 @@ function wireHover(svg) {
   svg.addEventListener("mouseleave", () => { cross.style.display = "none"; tip.style.opacity = "0"; });
 }
 
-// ---------- table view ------------------------------------------------------
+// ---------- table view (sortable) -------------------------------------------
+function sortValue(kw, col) {
+  switch (col) {
+    case "keyword": return kw.keyword.toLowerCase();
+    case "position": return kw.current && kw.current.found ? kw.current.position : 1e9;
+    case "diff": return kw.difficulty == null ? -1 : kw.difficulty;
+    case "rel": return kw.relevance == null ? -1 : kw.relevance;
+    case "results": return kw.result_count || 0;
+    case "snapshots": return kw.series.length;
+    default: return 0;
+  }
+}
+function sortedKeywords() {
+  const arr = DATA.keywords.slice();
+  if (!SORT.col) return arr;
+  arr.sort((a, b) => {
+    const va = sortValue(a, SORT.col), vb = sortValue(b, SORT.col);
+    if (va < vb) return -SORT.dir;
+    if (va > vb) return SORT.dir;
+    return 0;
+  });
+  return arr;
+}
+function th(label, col) {
+  const arrow = SORT.col === col ? `<span class="arrow">${SORT.dir > 0 ? "▲" : "▼"}</span>` : "";
+  return `<th class="sortable" data-col="${col}">${label}${arrow}</th>`;
+}
 function renderTable() {
-  let rows = "";
-  for (const kw of DATA.keywords) {
+  const rows = sortedKeywords().map((kw) => {
     const d = delta(kw.current, kw.previous);
     const pos = kw.current && kw.current.found ? "#" + kw.current.position : "—";
     const asof = kw.current ? fmtDateTime(kw.current.ts) : "—";
-    rows += `<tr><td>${escapeHTML(kw.keyword)}</td><td class="num">${pos}</td>` +
-      `<td class="num">${d.label || "—"}</td><td class="num">${kw.series.length}</td><td>${asof}</td></tr>`;
-  }
+    const diff = kw.difficulty == null ? "—" : Math.round(kw.difficulty);
+    const rel = kw.relevance == null ? "—" : Math.round(kw.relevance);
+    const results = kw.result_count ? resultsText(kw.result_count) : "—";
+    return `<tr><td>${escapeHTML(kw.keyword)}</td><td class="num">${pos}</td>` +
+      `<td class="num">${d.label || "—"}</td><td class="num">${diff}</td>` +
+      `<td class="num">${rel}</td><td class="num">${results}</td>` +
+      `<td class="num">${kw.series.length}</td><td>${asof}</td></tr>`;
+  }).join("");
+
   tableEl.innerHTML = `<table class="view"><thead><tr>` +
-    `<th>Keyword</th><th>Position</th><th>Trend</th><th>Snapshots</th><th>As of</th>` +
+    th("Keyword", "keyword") + th("Position", "position") + `<th>Trend</th>` +
+    th("Diff", "diff") + th("Rel", "rel") + th("Results", "results") +
+    th("Snapshots", "snapshots") + `<th>As of</th>` +
     `</tr></thead><tbody>${rows}</tbody></table>`;
+
+  tableEl.querySelectorAll("th.sortable").forEach((el) => {
+    el.addEventListener("click", () => {
+      const col = el.dataset.col;
+      if (SORT.col === col) SORT.dir = -SORT.dir;
+      else { SORT.col = col; SORT.dir = 1; }
+      renderTable();
+    });
+  });
 }
 
 // ---------- toast -----------------------------------------------------------

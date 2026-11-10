@@ -214,6 +214,80 @@ func (s *Store) InsertSnapshot(snap Snapshot, results []Result) (int64, error) {
 	return id, nil
 }
 
+// PositionPoint is one competitor rank at one time, for a per-keyword series.
+type PositionPoint struct {
+	Timestamp time.Time
+	Position  int
+}
+
+// LatestForKeyword returns the most recent snapshot for one keyword of an app
+// and country. found reports whether any snapshot exists.
+func (s *Store) LatestForKeyword(appID int64, country, keyword string) (Snapshot, bool, error) {
+	rows, err := s.db.Query(
+		`SELECT id, ts, app_id, country, keyword, position, found, result_count, difficulty, relevance, narrow
+		 FROM snapshots
+		 WHERE app_id = ? AND country = ? AND keyword = ?
+		 ORDER BY ts DESC LIMIT 1`,
+		appID, country, keyword,
+	)
+	if err != nil {
+		return Snapshot{}, false, fmt.Errorf("querying latest for keyword: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	snaps, err := scanSnapshots(rows)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	if len(snaps) == 0 {
+		return Snapshot{}, false, nil
+	}
+	return snaps[0], true, nil
+}
+
+// CompetitorSeries returns, per competitor track id, that competitor's stored
+// position over time for one keyword. A competitor only appears at the
+// snapshots where it was within the stored top-N.
+func (s *Store) CompetitorSeries(appID int64, country, keyword string, ids []int64) (map[int64][]PositionPoint, error) {
+	out := make(map[int64][]PositionPoint, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	args := []any{appID, country, keyword}
+	placeholders := make([]byte, 0, len(ids)*2)
+	for i, id := range ids {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args = append(args, id)
+	}
+	query := `SELECT s.ts, r.track_id, r.position
+		 FROM snapshots s JOIN results r ON r.snapshot_id = s.id
+		 WHERE s.app_id = ? AND s.country = ? AND s.keyword = ?
+		   AND r.track_id IN (` + string(placeholders) + `)
+		 ORDER BY s.ts`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying competitor series: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			ts       string
+			trackID  int64
+			position int
+		)
+		if err := rows.Scan(&ts, &trackID, &position); err != nil {
+			return nil, fmt.Errorf("scanning competitor series: %w", err)
+		}
+		t, _ := time.Parse(time.RFC3339, ts)
+		out[trackID] = append(out[trackID], PositionPoint{Timestamp: t, Position: position})
+	}
+	return out, rows.Err()
+}
+
 // CompetitorPositions returns, for one snapshot, the stored position of each of
 // the given track ids that appears among the snapshot's results. Ids outside the
 // stored top-N are simply absent from the map.

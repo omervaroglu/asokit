@@ -170,6 +170,51 @@ func TestCompetitorPositions(t *testing.T) {
 	}
 }
 
+func TestLatestForKeywordAndCompetitorSeries(t *testing.T) {
+	s := newTestStore(t)
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Two snapshots of "loan"; competitor 7 moves #3 → #2, competitor 8 only
+	// appears in the second snapshot.
+	id1, err := s.InsertSnapshot(
+		Snapshot{Timestamp: t0, AppID: 1, Country: "us", Keyword: "loan", Position: 5, Found: true, ResultCount: 200},
+		[]Result{{Position: 3, TrackID: 7, Name: "Seven"}},
+	)
+	if err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+	if _, err := s.InsertSnapshot(
+		Snapshot{Timestamp: t0.Add(time.Hour), AppID: 1, Country: "us", Keyword: "loan", Position: 4, Found: true, ResultCount: 200},
+		[]Result{{Position: 2, TrackID: 7, Name: "Seven"}, {Position: 4, TrackID: 8, Name: "Eight"}},
+	); err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+	_ = id1
+
+	latest, ok, err := s.LatestForKeyword(1, "us", "loan")
+	if err != nil || !ok {
+		t.Fatalf("LatestForKeyword: ok=%v err=%v", ok, err)
+	}
+	if latest.Position != 4 {
+		t.Errorf("latest position = %d, want 4 (newest)", latest.Position)
+	}
+
+	if _, ok, _ := s.LatestForKeyword(1, "us", "absent"); ok {
+		t.Errorf("expected no snapshot for unknown keyword")
+	}
+
+	series, err := s.CompetitorSeries(1, "us", "loan", []int64{7, 8})
+	if err != nil {
+		t.Fatalf("CompetitorSeries: %v", err)
+	}
+	if len(series[7]) != 2 || series[7][0].Position != 3 || series[7][1].Position != 2 {
+		t.Errorf("competitor 7 series = %+v, want #3 then #2", series[7])
+	}
+	if len(series[8]) != 1 || series[8][0].Position != 4 {
+		t.Errorf("competitor 8 series = %+v, want one point #4", series[8])
+	}
+}
+
 func TestPlainInsertLeavesMetricsNull(t *testing.T) {
 	s := newTestStore(t)
 	must(t, s.Insert(Snapshot{AppID: 1, Country: "us", Keyword: "k", Position: 1, Found: true, ResultCount: 200}))
