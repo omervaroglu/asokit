@@ -273,9 +273,12 @@ function delta(cur, prev) {
 const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const fmtDateTime = (iso) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
+function phrasesOf() { return DATA.phrases || []; }
+
 function renderCharts() {
   chartsEl.innerHTML = "";
-  const anyData = DATA.keywords.some((k) => k.series.length > 0);
+  const all = DATA.keywords.concat(phrasesOf());
+  const anyData = all.some((k) => k.series.length > 0);
   if (!anyData) {
     const d = document.createElement("div");
     d.className = "empty";
@@ -284,7 +287,20 @@ function renderCharts() {
     chartsEl.appendChild(d);
     return;
   }
-  for (const kw of DATA.keywords) {
+  const grouped = phrasesOf().length > 0;
+  renderCardGroup(grouped ? "Keywords" : "", DATA.keywords);
+  renderCardGroup("Phrases", phrasesOf());
+}
+
+function renderCardGroup(title, items) {
+  if (!items.length) return;
+  if (title) {
+    const h = document.createElement("div");
+    h.className = "grouphead";
+    h.textContent = title;
+    chartsEl.appendChild(h);
+  }
+  for (const kw of items) {
     const card = document.createElement("div");
     card.className = "card clickable";
     card.innerHTML = cardInnerHTML(kw);
@@ -538,19 +554,38 @@ function th(label, col) {
   const arrow = SORT.col === col ? `<span class="arrow">${SORT.dir > 0 ? "▲" : "▼"}</span>` : "";
   return `<th class="sortable" data-col="${col}">${label}${arrow}</th>`;
 }
+function rowHTML(kw) {
+  const d = delta(kw.current, kw.previous);
+  const pos = kw.current && kw.current.found ? "#" + kw.current.position : "—";
+  const asof = kw.current ? fmtDateTime(kw.current.ts) : "—";
+  const diff = kw.difficulty == null ? "—" : Math.round(kw.difficulty);
+  const rel = kw.relevance == null ? "—" : Math.round(kw.relevance);
+  const results = kw.result_count ? resultsText(kw.result_count) : "—";
+  return `<tr><td>${escapeHTML(kw.keyword)}</td><td class="num">${pos}</td>` +
+    `<td class="num">${d.label || "—"}</td><td class="num">${diff}</td>` +
+    `<td class="num">${rel}</td><td class="num">${results}</td>` +
+    `<td class="num">${kw.series.length}</td><td>${asof}</td></tr>`;
+}
+function sortList(list) {
+  const arr = list.slice();
+  if (SORT.col) {
+    arr.sort((a, b) => {
+      const va = sortValue(a, SORT.col), vb = sortValue(b, SORT.col);
+      if (va < vb) return -SORT.dir;
+      if (va > vb) return SORT.dir;
+      return 0;
+    });
+  }
+  return arr;
+}
 function renderTable() {
-  const rows = sortedKeywords().map((kw) => {
-    const d = delta(kw.current, kw.previous);
-    const pos = kw.current && kw.current.found ? "#" + kw.current.position : "—";
-    const asof = kw.current ? fmtDateTime(kw.current.ts) : "—";
-    const diff = kw.difficulty == null ? "—" : Math.round(kw.difficulty);
-    const rel = kw.relevance == null ? "—" : Math.round(kw.relevance);
-    const results = kw.result_count ? resultsText(kw.result_count) : "—";
-    return `<tr><td>${escapeHTML(kw.keyword)}</td><td class="num">${pos}</td>` +
-      `<td class="num">${d.label || "—"}</td><td class="num">${diff}</td>` +
-      `<td class="num">${rel}</td><td class="num">${results}</td>` +
-      `<td class="num">${kw.series.length}</td><td>${asof}</td></tr>`;
-  }).join("");
+  const span = 8;
+  let rows = sortList(DATA.keywords).map(rowHTML).join("");
+  if (phrasesOf().length) {
+    rows = `<tr class="subhead"><td colspan="${span}">Keywords</td></tr>` + rows +
+      `<tr class="subhead"><td colspan="${span}">Phrases</td></tr>` +
+      sortList(phrasesOf()).map(rowHTML).join("");
+  }
 
   tableEl.innerHTML = `<table class="view"><thead><tr>` +
     th("Keyword", "keyword") + th("Position", "position") + `<th>Trend</th>` +

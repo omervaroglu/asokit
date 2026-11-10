@@ -240,6 +240,37 @@ func TestSaveLoadRoundTripsNewFields(t *testing.T) {
 	}
 }
 
+// Phrases are an optional second group: split/deduped like keywords, round-trip
+// through Save, and a market with only phrases (no keywords) is valid. Terms()
+// unions both groups without duplicates.
+func TestPhrases(t *testing.T) {
+	path := writeTemp(t, "app_id: 1\nmarkets:\n  - country: us\n    keywords: [sleep, calm]\n    phrases: [\"sleep sounds, sleep sounds\", \"white noise\"]\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := cfg.Markets[0]
+	if len(m.Phrases) != 2 || m.Phrases[0] != "sleep sounds" || m.Phrases[1] != "white noise" {
+		t.Fatalf("phrases = %v, want [sleep sounds, white noise] (split+dedup)", m.Phrases)
+	}
+	if terms := m.Terms(); len(terms) != 4 || terms[0] != "sleep" || terms[2] != "sleep sounds" {
+		t.Errorf("Terms() = %v, want keywords then phrases", terms)
+	}
+
+	// Phrases-only market is valid; Save round-trips phrases.
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil || len(got.Markets[0].Phrases) != 2 {
+		t.Fatalf("phrases not round-tripped: %+v (err %v)", got.Markets[0].Phrases, err)
+	}
+
+	if _, err := Load(writeTemp(t, "app_id: 1\nmarkets:\n  - country: de\n    phrases: [schlaf gut]\n")); err != nil {
+		t.Errorf("phrases-only market should be valid, got %v", err)
+	}
+}
+
 func TestCompetitorValidation(t *testing.T) {
 	// Competitor id must be positive and must not be the tracked app itself.
 	if _, err := Load(writeTemp(t, "app_id: 1\ncompetitors:\n  - {id: 0, name: X}\nmarkets:\n  - {country: us, keywords: [x]}\n")); err == nil {

@@ -82,6 +82,7 @@ type dataResponse struct {
 	Markets     []string        `json:"markets"` // all configured storefronts
 	GeneratedAt string          `json:"generated_at"`
 	Keywords    []keywordData   `json:"keywords"`
+	Phrases     []keywordData   `json:"phrases"`
 	Releases    []releaseMarker `json:"releases"`
 }
 
@@ -144,6 +145,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	resp := dataResponse{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Keywords:    []keywordData{},
+		Phrases:     []keywordData{},
 		Markets:     []string{},
 		Releases:    []releaseMarker{},
 	}
@@ -156,7 +158,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		market = cfg.Markets[0] // default to the first storefront
 	}
-	kws, err := s.buildKeywords(cfg.AppID, market)
+	kws, phrases, err := s.buildMarket(cfg.AppID, market)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -177,6 +179,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	resp.Country = market.Country
 	resp.Markets = cfg.Countries()
 	resp.Keywords = kws
+	resp.Phrases = phrases
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -204,13 +207,27 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		// Merge onto the existing config so fields the setup form does not send
 		// (store_top, relevance, competitors) are preserved rather than wiped.
 		cfg := &config.Config{}
+		var prevPhrases map[string][]string
 		if cur, _ := s.snapshot(); cur != nil {
 			clone := *cur
 			cfg = &clone
+			prevPhrases = make(map[string][]string, len(cur.Markets))
+			for _, m := range cur.Markets {
+				prevPhrases[m.Country] = m.Phrases
+			}
 		}
 		cfg.AppID = req.AppID
 		cfg.SearchLimit = req.SearchLimit
 		cfg.Markets = req.Markets
+		// Phrases aren't in the setup form; carry forward a market's existing
+		// phrases when the request omits them, so a Save never drops them.
+		for i, m := range cfg.Markets {
+			if len(m.Phrases) == 0 {
+				if p, ok := prevPhrases[config.NormalizeCountry(m.Country)]; ok {
+					cfg.Markets[i].Phrases = p
+				}
+			}
+		}
 		cfg.Normalize()
 		if err := cfg.Validate(); err != nil {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: err.Error()})
@@ -270,7 +287,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		rc := track.RunConfig{
 			AppID:       cfg.AppID,
 			Country:     m.Country,
-			Keywords:    m.Keywords,
+			Keywords:    m.Terms(), // keywords + phrases, tracked together
 			SearchLimit: cfg.SearchLimit,
 			StoreTop:    cfg.StoreTop,
 			Weights:     metrics.DefaultWeights,
@@ -291,16 +308,16 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, total)
 }
 
-// buildKeywords assembles one series per keyword of a market, preserving the
-// market's keyword order so the dashboard is stable.
-func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, error) {
+// buildMarket assembles the keyword and phrase sections of a market from a
+// single history read, preserving each group's configured order.
+func (s *Server) buildMarket(appID int64, m config.Market) (keywords, phrases []keywordData, err error) {
 	history, err := s.st.History(appID, m.Country)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	byKeyword := make(map[string][]point, len(m.Keywords))
-	latest := make(map[string]store.Snapshot, len(m.Keywords))
+	byKeyword := make(map[string][]point)
+	latest := make(map[string]store.Snapshot)
 	for _, snap := range history {
 		byKeyword[snap.Keyword] = append(byKeyword[snap.Keyword], point{
 			TS:       snap.Timestamp.Format(time.RFC3339),
@@ -309,9 +326,13 @@ func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, err
 		})
 		latest[snap.Keyword] = snap // history is ts-ascending, so the last wins
 	}
+	return section(m.Keywords, byKeyword, latest), section(m.Phrases, byKeyword, latest), nil
+}
 
-	out := make([]keywordData, 0, len(m.Keywords))
-	for _, kw := range m.Keywords {
+// section builds the per-term data for one group (keywords or phrases).
+func section(terms []string, byKeyword map[string][]point, latest map[string]store.Snapshot) []keywordData {
+	out := make([]keywordData, 0, len(terms))
+	for _, kw := range terms {
 		series := byKeyword[kw]
 		kd := keywordData{Keyword: kw, Series: series}
 		if n := len(series); n > 0 {
@@ -328,7 +349,7 @@ func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, err
 		}
 		out = append(out, kd)
 	}
-	return out, nil
+	return out
 }
 
 // handleKeyword serves the on-demand detail for one keyword: the latest

@@ -61,7 +61,7 @@ func cmdRun(ctx context.Context, args []string) error {
 		rc := track.RunConfig{
 			AppID:       cfg.AppID,
 			Country:     m.Country,
-			Keywords:    m.Keywords,
+			Keywords:    m.Terms(), // keywords + phrases, tracked together
 			SearchLimit: cfg.SearchLimit,
 			StoreTop:    cfg.StoreTop,
 			Weights:     metrics.DefaultWeights,
@@ -160,6 +160,10 @@ func cmdReport(args []string) error {
 		fmt.Printf("No snapshots yet for %s. Run `asokit run` first.\n", strings.ToUpper(market.Country))
 		return nil
 	}
+	byKeyword := make(map[string]store.Snapshot, len(latest))
+	for _, s := range latest {
+		byKeyword[s.Keyword] = s
+	}
 
 	// Competitor columns are opt-in; their ranks come from the stored results,
 	// so a competitor below store_top shows as "—".
@@ -173,7 +177,6 @@ func cmdReport(args []string) error {
 	}
 
 	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
 	header := []string{"KEYWORD", "POSITION"}
 	if *trend {
@@ -184,32 +187,64 @@ func cmdReport(args []string) error {
 		header = append(header, competitorHeader(c))
 	}
 	header = append(header, "AS OF")
-	_, _ = fmt.Fprintln(tw, strings.Join(header, "\t"))
 
-	for _, s := range latest {
-		row := []string{s.Keyword, positionLabel(s.Position, s.Found)}
-		if *trend {
-			prevPos, prevFound, err := db.PreviousPosition(cfg.AppID, market.Country, s.Keyword)
-			if err != nil {
-				return err
-			}
-			row = append(row, trendLabel(s, prevPos, prevFound))
+	// printSection renders one group (keywords or phrases) as its own aligned
+	// table, iterating the configured terms so the report follows the config.
+	printSection := func(title string, terms []string) error {
+		if len(terms) == 0 {
+			return nil
 		}
-		row = append(row, difficultyLabel(s.Difficulty), relevanceLabel(s.Relevance), resultsLabel(s.ResultCount))
-
-		if len(comps) > 0 {
-			positions, err := db.CompetitorPositions(s.ID, compIDs)
-			if err != nil {
-				return err
-			}
-			for _, c := range comps {
-				row = append(row, competitorRank(positions, c.ID))
-			}
+		if title != "" {
+			fmt.Printf("\n%s\n", title)
 		}
-		row = append(row, s.Timestamp.Format("2006-01-02 15:04"))
-		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, strings.Join(header, "\t"))
+		for _, kw := range terms {
+			s, ok := byKeyword[kw]
+			if !ok {
+				// Configured but not measured yet.
+				row := []string{kw, "—"}
+				for i := 2; i < len(header)-1; i++ {
+					row = append(row, "—")
+				}
+				row = append(row, "no data yet")
+				_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
+				continue
+			}
+			row := []string{kw, positionLabel(s.Position, s.Found)}
+			if *trend {
+				prevPos, prevFound, perr := db.PreviousPosition(cfg.AppID, market.Country, kw)
+				if perr != nil {
+					return perr
+				}
+				row = append(row, trendLabel(s, prevPos, prevFound))
+			}
+			row = append(row, difficultyLabel(s.Difficulty), relevanceLabel(s.Relevance), resultsLabel(s.ResultCount))
+			if len(comps) > 0 {
+				positions, perr := db.CompetitorPositions(s.ID, compIDs)
+				if perr != nil {
+					return perr
+				}
+				for _, c := range comps {
+					row = append(row, competitorRank(positions, c.ID))
+				}
+			}
+			row = append(row, s.Timestamp.Format("2006-01-02 15:04"))
+			_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
+		}
+		return tw.Flush()
 	}
-	return tw.Flush()
+
+	// A single untitled table when there are no phrases; two labelled sections
+	// otherwise.
+	kwTitle := ""
+	if len(market.Phrases) > 0 {
+		kwTitle = "Keywords"
+	}
+	if err := printSection(kwTitle, market.Keywords); err != nil {
+		return err
+	}
+	return printSection("Phrases", market.Phrases)
 }
 
 // cmdExport writes all snapshots as CSV to stdout or a file.

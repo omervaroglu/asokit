@@ -23,6 +23,28 @@ type Market struct {
 	Country string `yaml:"country" json:"country"`
 	// Keywords is the list of search terms to track in this storefront.
 	Keywords []string `yaml:"keywords" json:"keywords"`
+	// Phrases is an optional second group of terms, tracked exactly like
+	// Keywords but shown as a separate section in the report and dashboard
+	// (e.g. multi-word search phrases kept apart from single keywords).
+	Phrases []string `yaml:"phrases,omitempty" json:"phrases,omitempty"`
+}
+
+// Terms returns the market's keywords followed by its phrases, de-duplicated
+// case-insensitively across both groups — the full set to actually search.
+func (m Market) Terms() []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(m.Keywords)+len(m.Phrases))
+	for _, group := range [][]string{m.Keywords, m.Phrases} {
+		for _, k := range group {
+			key := strings.ToLower(k)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // Relevance defines what makes a search result "the same type" as the tracked
@@ -135,10 +157,15 @@ func (c *Config) Normalize() {
 		markets = append(markets, Market{
 			Country:  strings.ToLower(strings.TrimSpace(m.Country)),
 			Keywords: SplitKeywords(m.Keywords),
+			Phrases:  SplitKeywords(m.Phrases),
 		})
 	}
 	c.Markets = markets
 }
+
+// NormalizeCountry lowercases and trims a storefront code, matching how
+// Normalize canonicalises a market's country.
+func NormalizeCountry(c string) string { return strings.ToLower(strings.TrimSpace(c)) }
 
 // SplitKeywords splits each entry on commas/semicolons/newlines (so a list
 // pasted from App Store Connect becomes individual terms), trims, drops empties,
@@ -189,8 +216,8 @@ func (c *Config) Validate() error {
 		if err := validateCountry(m.Country); err != nil {
 			return err
 		}
-		if len(m.Keywords) == 0 {
-			return fmt.Errorf("config: market %q needs at least one keyword", m.Country)
+		if len(m.Keywords) == 0 && len(m.Phrases) == 0 {
+			return fmt.Errorf("config: market %q needs at least one keyword or phrase", m.Country)
 		}
 		if seen[m.Country] {
 			return fmt.Errorf("config: duplicate market %q", m.Country)
