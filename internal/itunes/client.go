@@ -21,6 +21,10 @@ import (
 // the client at an httptest server.
 var BaseURL = "https://itunes.apple.com/search"
 
+// MaxResults is the hard ceiling the Search API enforces on the number of
+// results per term. A response at this count is a ceiling, not a true total.
+const MaxResults = 200
+
 // App is a single search result, trimmed to the fields asokit needs. Beyond
 // identity (ID/Name), these fields feed the competition and relevance metrics;
 // the Search API already returns them, so capturing them needs no extra request.
@@ -68,8 +72,8 @@ func New() *Client {
 // Search returns the software results for term in the given country storefront,
 // in the API's relevance order. limit is clamped to the API maximum of 200.
 func (c *Client) Search(ctx context.Context, term, country string, limit int) ([]App, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 200
+	if limit <= 0 || limit > MaxResults {
+		limit = MaxResults
 	}
 
 	q := url.Values{}
