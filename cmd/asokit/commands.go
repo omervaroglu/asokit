@@ -16,6 +16,7 @@ import (
 
 	"github.com/omervaroglu/asokit/internal/config"
 	"github.com/omervaroglu/asokit/internal/itunes"
+	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/rank"
 	"github.com/omervaroglu/asokit/internal/store"
 	"github.com/omervaroglu/asokit/internal/track"
@@ -44,11 +45,31 @@ func cmdRun(ctx context.Context, args []string) error {
 	defer func() { _ = db.Close() }()
 
 	client := itunes.New()
+	// Resolve the relevance criteria once (one Lookup at most), outside the
+	// per-market loop; the genre is effectively the same across storefronts.
+	crit := track.ResolveRelevance(ctx, client, cfg.AppID, cfg.Markets[0].Country, cfg.Relevance)
+
 	var totalStored, totalFailures int
 	var at time.Time
 	for _, m := range cfg.Markets {
 		fmt.Printf("[%s]\n", strings.ToUpper(m.Country))
-		res, err := track.RunOnce(ctx, db, cfg.AppID, m.Country, m.Keywords, cfg.SearchLimit, client, *delay,
+		// Version marker: record the app's current version for this storefront.
+		// Non-fatal — a failed lookup must not abort keyword tracking.
+		if err := track.CaptureRelease(ctx, client, db, cfg.AppID, m.Country); err != nil {
+			fmt.Fprintf(os.Stderr, "  (version lookup failed: %v)\n", err)
+		}
+		rc := track.RunConfig{
+			AppID:       cfg.AppID,
+			Country:     m.Country,
+			Keywords:    m.Terms(), // keywords + phrases, tracked together
+			SearchLimit: cfg.SearchLimit,
+			StoreTop:    cfg.StoreTop,
+			Weights:     metrics.DefaultWeights,
+			Relevance:   crit,
+			Client:      client,
+			Delay:       *delay,
+		}
+		res, err := track.RunOnce(ctx, db, rc,
 			func(keyword string, r rank.Result, rerr error) {
 				if rerr != nil {
 					fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, rerr)
@@ -106,6 +127,8 @@ func cmdReport(args []string) error {
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
 	country := fs.String("country", "", "storefront to report (default: first configured market)")
 	trend := fs.Bool("trend", false, "show movement versus the previous snapshot")
+	competitors := fs.Bool("competitors", false, "add a column per configured competitor with its rank")
+	compare := fs.String("compare", "", "compare the latest run with the run nearest this date (YYYY-MM-DD)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -130,6 +153,10 @@ func cmdReport(args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
+	if *compare != "" {
+		return reportCompare(db, cfg, market, *compare)
+	}
+
 	latest, err := db.Latest(cfg.AppID, market.Country)
 	if err != nil {
 		return err
@@ -138,29 +165,227 @@ func cmdReport(args []string) error {
 		fmt.Printf("No snapshots yet for %s. Run `asokit run` first.\n", strings.ToUpper(market.Country))
 		return nil
 	}
-
-	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if *trend {
-		_, _ = fmt.Fprintln(tw, "KEYWORD\tPOSITION\tTREND\tAS OF")
-	} else {
-		_, _ = fmt.Fprintln(tw, "KEYWORD\tPOSITION\tAS OF")
-	}
+	byKeyword := make(map[string]store.Snapshot, len(latest))
 	for _, s := range latest {
-		pos := positionLabel(s.Position, s.Found)
-		asOf := s.Timestamp.Format("2006-01-02 15:04")
-		if *trend {
-			prevPos, prevFound, err := db.PreviousPosition(cfg.AppID, market.Country, s.Keyword)
-			if err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Keyword, pos,
-				trendLabel(s, prevPos, prevFound), asOf)
-		} else {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Keyword, pos, asOf)
+		byKeyword[s.Keyword] = s
+	}
+
+	// Competitor columns are opt-in; their ranks come from the stored results,
+	// so a competitor below store_top shows as "—".
+	var comps []config.Competitor
+	var compIDs []int64
+	if *competitors {
+		comps = cfg.Competitors
+		for _, c := range comps {
+			compIDs = append(compIDs, c.ID)
 		}
 	}
-	return tw.Flush()
+
+	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
+
+	header := []string{"KEYWORD", "POSITION"}
+	if *trend {
+		header = append(header, "TREND")
+	}
+	header = append(header, "DIFF", "REL", "RESULTS")
+	for _, c := range comps {
+		header = append(header, competitorHeader(c))
+	}
+	header = append(header, "AS OF")
+
+	// printSection renders one group (keywords or phrases) as its own aligned
+	// table, iterating the configured terms so the report follows the config.
+	printSection := func(title string, terms []string) error {
+		if len(terms) == 0 {
+			return nil
+		}
+		if title != "" {
+			fmt.Printf("\n%s\n", title)
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, strings.Join(header, "\t"))
+		for _, kw := range terms {
+			s, ok := byKeyword[kw]
+			if !ok {
+				// Configured but not measured yet.
+				row := []string{kw, "—"}
+				for i := 2; i < len(header)-1; i++ {
+					row = append(row, "—")
+				}
+				row = append(row, "no data yet")
+				_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
+				continue
+			}
+			row := []string{kw, positionLabel(s.Position, s.Found)}
+			if *trend {
+				prevPos, prevFound, perr := db.PreviousPosition(cfg.AppID, market.Country, kw)
+				if perr != nil {
+					return perr
+				}
+				row = append(row, trendLabel(s, prevPos, prevFound))
+			}
+			row = append(row, difficultyLabel(s.Difficulty), relevanceLabel(s.Relevance), resultsLabel(s.ResultCount))
+			if len(comps) > 0 {
+				positions, perr := db.CompetitorPositions(s.ID, compIDs)
+				if perr != nil {
+					return perr
+				}
+				for _, c := range comps {
+					row = append(row, competitorRank(positions, c.ID))
+				}
+			}
+			row = append(row, s.Timestamp.Format("2006-01-02 15:04"))
+			_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
+		}
+		return tw.Flush()
+	}
+
+	// A single untitled table when there are no phrases; two labelled sections
+	// otherwise.
+	kwTitle := ""
+	if len(market.Phrases) > 0 {
+		kwTitle = "Keywords"
+	}
+	if err := printSection(kwTitle, market.Keywords); err != nil {
+		return err
+	}
+	return printSection("Phrases", market.Phrases)
+}
+
+// reportCompare shows, per keyword, how the latest run moved versus the run
+// nearest a chosen date: position movement, difficulty change, and a new/lost
+// flag when a keyword appears in only one of the two runs.
+func reportCompare(db *store.Store, cfg *config.Config, market config.Market, dateStr string) error {
+	target, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return fmt.Errorf("--compare: invalid date %q, want YYYY-MM-DD", dateStr)
+	}
+
+	history, err := db.History(cfg.AppID, market.Country)
+	if err != nil {
+		return err
+	}
+	if len(history) == 0 {
+		fmt.Printf("No snapshots yet for %s. Run `asokit run` first.\n", strings.ToUpper(market.Country))
+		return nil
+	}
+
+	// Index by keyword→run-timestamp and collect the distinct run timestamps.
+	byKwTS := map[string]map[string]store.Snapshot{}
+	tsSet := map[string]time.Time{}
+	for _, s := range history {
+		ts := s.Timestamp.Format(time.RFC3339)
+		if byKwTS[s.Keyword] == nil {
+			byKwTS[s.Keyword] = map[string]store.Snapshot{}
+		}
+		byKwTS[s.Keyword][ts] = s
+		tsSet[ts] = s.Timestamp
+	}
+
+	// The latest run, and the run whose timestamp is nearest the target date.
+	var latestTS, baseTS string
+	var latestT time.Time
+	bestDiff := time.Duration(1) << 62
+	for ts, t := range tsSet {
+		if latestTS == "" || t.After(latestT) {
+			latestTS, latestT = ts, t
+		}
+		d := t.Sub(target)
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDiff {
+			bestDiff, baseTS = d, ts
+		}
+	}
+
+	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
+	fmt.Printf("Comparing %s → %s\n",
+		tsSet[baseTS].Format("2006-01-02 15:04"), tsSet[latestTS].Format("2006-01-02 15:04"))
+	if baseTS == latestTS {
+		fmt.Println("(only one run near that date — nothing to compare)")
+		return nil
+	}
+
+	header := []string{"KEYWORD", "WAS", "NOW", "MOVE", "DIFF Δ", "FLAG"}
+	printSection := func(title string, terms []string) error {
+		if len(terms) == 0 {
+			return nil
+		}
+		if title != "" {
+			fmt.Printf("\n%s\n", title)
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, strings.Join(header, "\t"))
+		for _, kw := range terms {
+			base, hasBase := byKwTS[kw][baseTS]
+			cur, hasCur := byKwTS[kw][latestTS]
+			if !hasBase && !hasCur {
+				continue
+			}
+			was, now := "—", "—"
+			if hasBase {
+				was = positionLabel(base.Position, base.Found)
+			}
+			if hasCur {
+				now = positionLabel(cur.Position, cur.Found)
+			}
+			flag := ""
+			switch {
+			case hasCur && !hasBase:
+				flag = "new"
+			case hasBase && !hasCur:
+				flag = "lost"
+			}
+			row := []string{kw, was, now,
+				compareMove(base, hasBase, cur, hasCur),
+				compareDiffDelta(base, hasBase, cur, hasCur), flag}
+			_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
+		}
+		return tw.Flush()
+	}
+
+	kwTitle := ""
+	if len(market.Phrases) > 0 {
+		kwTitle = "Keywords"
+	}
+	if err := printSection(kwTitle, market.Keywords); err != nil {
+		return err
+	}
+	return printSection("Phrases", market.Phrases)
+}
+
+// compareMove describes the position movement between two snapshots (positive
+// movement = improved, i.e. a smaller rank number).
+func compareMove(base store.Snapshot, hasBase bool, cur store.Snapshot, hasCur bool) string {
+	if !hasBase || !hasCur {
+		return "—"
+	}
+	switch {
+	case !base.Found && !cur.Found:
+		return "—"
+	case base.Found && !cur.Found:
+		return "dropped out"
+	case !base.Found && cur.Found:
+		return "entered"
+	}
+	switch d := base.Position - cur.Position; {
+	case d > 0:
+		return fmt.Sprintf("▲ %d", d)
+	case d < 0:
+		return fmt.Sprintf("▼ %d", -d)
+	default:
+		return "="
+	}
+}
+
+// compareDiffDelta is the signed difficulty change, or "—" when either side
+// lacks a difficulty score.
+func compareDiffDelta(base store.Snapshot, hasBase bool, cur store.Snapshot, hasCur bool) string {
+	if !hasBase || !hasCur || base.Difficulty == nil || cur.Difficulty == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%+.0f", *cur.Difficulty-*base.Difficulty)
 }
 
 // cmdExport writes all snapshots as CSV to stdout or a file.
@@ -195,7 +420,7 @@ func cmdExport(args []string) error {
 
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
-	if err := cw.Write([]string{"timestamp", "app_id", "country", "keyword", "position", "found", "result_count"}); err != nil {
+	if err := cw.Write([]string{"timestamp", "app_id", "country", "keyword", "position", "found", "result_count", "difficulty", "relevance", "narrow"}); err != nil {
 		return err
 	}
 	for _, s := range snaps {
@@ -207,6 +432,9 @@ func cmdExport(args []string) error {
 			strconv.Itoa(s.Position),
 			strconv.FormatBool(s.Found),
 			strconv.Itoa(s.ResultCount),
+			csvFloat(s.Difficulty),
+			csvFloat(s.Relevance),
+			csvBool(s.Narrow),
 		}
 		if err := cw.Write(rec); err != nil {
 			return err
@@ -302,6 +530,64 @@ func positionLabel(position int, found bool) string {
 		return "not in top results"
 	}
 	return "#" + strconv.Itoa(position)
+}
+
+// difficultyLabel and relevanceLabel render the nullable metrics, showing "—"
+// for snapshots taken before the metrics existed.
+func difficultyLabel(d *float64) string {
+	if d == nil {
+		return "—"
+	}
+	return strconv.FormatFloat(*d, 'f', 0, 64)
+}
+
+func relevanceLabel(r *float64) string {
+	if r == nil {
+		return "—"
+	}
+	return strconv.FormatFloat(*r, 'f', 0, 64)
+}
+
+// resultsLabel shows the result count, rendering the API's 200 ceiling as
+// "200+" since it is a cap, not a true total.
+func resultsLabel(count int) string {
+	if count >= itunes.MaxResults {
+		return "200+"
+	}
+	return strconv.Itoa(count)
+}
+
+// competitorHeader is the column title for a competitor: its name, or its id
+// when unnamed.
+func competitorHeader(c config.Competitor) string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return strconv.FormatInt(c.ID, 10)
+}
+
+// competitorRank renders a competitor's stored rank, or "—" when it is below
+// store_top (and so not tracked for this keyword).
+func competitorRank(positions map[int64]int, id int64) string {
+	if pos, ok := positions[id]; ok {
+		return "#" + strconv.Itoa(pos)
+	}
+	return "—"
+}
+
+// csvFloat and csvBool render nullable metrics for CSV: empty cell when unset.
+func csvFloat(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*v, 'f', 2, 64)
+}
+
+func csvBool(v *bool) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatBool(*v)
 }
 
 // trendLabel describes how the latest position moved versus the previous one.

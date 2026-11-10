@@ -32,5 +32,33 @@ adheres to [Semantic Versioning](https://semver.org/).
 - YAML config, local SQLite storage, request throttling and backoff on API
   rate limiting.
 - CI (vet, test, build, lint) and a daily-tracking workflow template.
+- Competition metrics: each run keeps the top results per keyword (`store_top`,
+  default 50) and computes a **difficulty** (0–100) and **relevance** (0–10)
+  score per snapshot, documented and unit-tested in `internal/metrics`. Title
+  matching is Unicode-safe (Turkish İ/ı, German ü/ß, CJK). A term returning the
+  API's 200-result ceiling is marked *narrow*/shown as "200+". No field is a
+  search-volume estimate.
+- Competitor tracking: configure `competitors: [{id, name}]` and see each one's
+  rank per keyword, derived from the stored results (no extra API calls).
+  `report --competitors` adds a column each; the dashboard shows per-competitor
+  rank-over-time sparklines in a keyword's detail.
+- Keyword detail in the dashboard: click a card for the latest top-10 (name,
+  rating count, genre, your own app highlighted). Table view gains sortable
+  Difficulty / Relevance / Results columns.
+- App version markers: each run records the app's current version and release
+  date (deduplicated `releases` table); the dashboard draws them as dashed
+  vertical lines with the version label on the rank-over-time charts.
+- Phrase groups: a market may carry an optional `phrases:` list beside
+  `keywords:`, tracked identically but shown as a separate section in the report
+  and dashboard.
+- `report --compare <YYYY-MM-DD>`: compare the latest run with the run nearest a
+  date — per-keyword position movement, difficulty change, and new/lost flags.
+- `export` now includes the difficulty, relevance and narrow columns.
+
+### Fixed
+- Retry transient network failures, not just rate limiting: server errors
+  (HTTP 5xx) and request timeouts / "context deadline exceeded" now get the
+  same exponential backoff, so a keyword is no longer dropped from a run over a
+  single flaky request. A caller-cancelled context still stops immediately.
 
 [Unreleased]: https://github.com/omervaroglu/asokit/commits/main

@@ -182,3 +182,101 @@ func TestSearchLimitClamped(t *testing.T) {
 		t.Errorf("SearchLimit = %d, want clamped to %d", cfg.SearchLimit, DefaultSearchLimit)
 	}
 }
+
+// A config written before the competition feature (no store_top/relevance/
+// competitors) must still load, defaulting store_top and leaving the new fields
+// empty — the back-compat guarantee in the acceptance criteria.
+func TestBackCompatNoNewFields(t *testing.T) {
+	cfg, err := Load(writeTemp(t, "app_id: 1\nmarkets:\n  - {country: us, keywords: [x]}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.StoreTop != DefaultStoreTop {
+		t.Errorf("StoreTop = %d, want default %d", cfg.StoreTop, DefaultStoreTop)
+	}
+	if len(cfg.Competitors) != 0 || len(cfg.Relevance.GenreIDs) != 0 || len(cfg.Relevance.TitleTerms) != 0 {
+		t.Errorf("expected empty new fields, got %+v", cfg)
+	}
+}
+
+func TestStoreTopClampedToSearchLimit(t *testing.T) {
+	cfg, err := Load(writeTemp(t, "app_id: 1\nsearch_limit: 30\nstore_top: 100\nmarkets:\n  - {country: us, keywords: [x]}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.StoreTop != 30 {
+		t.Errorf("StoreTop = %d, want clamped to search_limit 30", cfg.StoreTop)
+	}
+}
+
+// Save then Load must round-trip the new fields, so a browser "Save" or a hand
+// edit never drops competitors / relevance / store_top.
+func TestSaveLoadRoundTripsNewFields(t *testing.T) {
+	path := writeTemp(t, "app_id: 1\nmarkets:\n  - {country: us, keywords: [x]}\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.StoreTop = 25
+	cfg.Relevance = Relevance{GenreIDs: []string{"6015"}, TitleTerms: []string{"budget"}}
+	cfg.Competitors = []Competitor{{ID: 123, Name: "Rival"}}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.StoreTop != 25 {
+		t.Errorf("StoreTop = %d, want 25", got.StoreTop)
+	}
+	if len(got.Relevance.GenreIDs) != 1 || got.Relevance.GenreIDs[0] != "6015" ||
+		len(got.Relevance.TitleTerms) != 1 || got.Relevance.TitleTerms[0] != "budget" {
+		t.Errorf("relevance not round-tripped: %+v", got.Relevance)
+	}
+	if len(got.Competitors) != 1 || got.Competitors[0].ID != 123 || got.Competitors[0].Name != "Rival" {
+		t.Errorf("competitors not round-tripped: %+v", got.Competitors)
+	}
+}
+
+// Phrases are an optional second group: split/deduped like keywords, round-trip
+// through Save, and a market with only phrases (no keywords) is valid. Terms()
+// unions both groups without duplicates.
+func TestPhrases(t *testing.T) {
+	path := writeTemp(t, "app_id: 1\nmarkets:\n  - country: us\n    keywords: [sleep, calm]\n    phrases: [\"sleep sounds, sleep sounds\", \"white noise\"]\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := cfg.Markets[0]
+	if len(m.Phrases) != 2 || m.Phrases[0] != "sleep sounds" || m.Phrases[1] != "white noise" {
+		t.Fatalf("phrases = %v, want [sleep sounds, white noise] (split+dedup)", m.Phrases)
+	}
+	if terms := m.Terms(); len(terms) != 4 || terms[0] != "sleep" || terms[2] != "sleep sounds" {
+		t.Errorf("Terms() = %v, want keywords then phrases", terms)
+	}
+
+	// Phrases-only market is valid; Save round-trips phrases.
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil || len(got.Markets[0].Phrases) != 2 {
+		t.Fatalf("phrases not round-tripped: %+v (err %v)", got.Markets[0].Phrases, err)
+	}
+
+	if _, err := Load(writeTemp(t, "app_id: 1\nmarkets:\n  - country: de\n    phrases: [schlaf gut]\n")); err != nil {
+		t.Errorf("phrases-only market should be valid, got %v", err)
+	}
+}
+
+func TestCompetitorValidation(t *testing.T) {
+	// Competitor id must be positive and must not be the tracked app itself.
+	if _, err := Load(writeTemp(t, "app_id: 1\ncompetitors:\n  - {id: 0, name: X}\nmarkets:\n  - {country: us, keywords: [x]}\n")); err == nil {
+		t.Error("expected error for competitor id 0")
+	}
+	if _, err := Load(writeTemp(t, "app_id: 7\ncompetitors:\n  - {id: 7, name: Self}\nmarkets:\n  - {country: us, keywords: [x]}\n")); err == nil {
+		t.Error("expected error for competitor equal to app_id")
+	}
+}

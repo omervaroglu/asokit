@@ -15,6 +15,7 @@ import (
 
 	"github.com/omervaroglu/asokit/internal/config"
 	"github.com/omervaroglu/asokit/internal/itunes"
+	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/store"
 	"github.com/omervaroglu/asokit/internal/track"
 )
@@ -36,15 +37,53 @@ type keywordData struct {
 	Current  *point  `json:"current"`
 	Previous *point  `json:"previous"`
 	Series   []point `json:"series"`
+
+	// Latest-snapshot metrics for the table columns (nil when not computed).
+	Difficulty  *float64 `json:"difficulty"`
+	Relevance   *float64 `json:"relevance"`
+	Narrow      *bool    `json:"narrow"`
+	ResultCount int      `json:"result_count"`
+}
+
+// resultRow is one stored competitor row in a keyword's detail view.
+type resultRow struct {
+	Position    int     `json:"position"`
+	TrackID     int64   `json:"track_id"`
+	Name        string  `json:"name"`
+	RatingCount int     `json:"rating_count"`
+	RatingAvg   float64 `json:"rating_avg"`
+	Genre       string  `json:"genre"`
+}
+
+// competitorSeries is one tracked competitor's rank-over-time for a keyword.
+type competitorSeries struct {
+	ID     int64   `json:"id"`
+	Name   string  `json:"name"`
+	Series []point `json:"series"`
+}
+
+// keywordDetail is the on-demand payload behind a keyword card: the latest
+// snapshot's top results and each competitor's series for that keyword.
+type keywordDetail struct {
+	Keyword     string             `json:"keyword"`
+	Top         []resultRow        `json:"top"`
+	Competitors []competitorSeries `json:"competitors"`
+}
+
+type releaseMarker struct {
+	Version    string `json:"version"`
+	ReleasedAt string `json:"released_at"`
 }
 
 type dataResponse struct {
-	Initialized bool          `json:"initialized"`
-	AppID       int64         `json:"app_id"`
-	Country     string        `json:"country"` // the market this response is for
-	Markets     []string      `json:"markets"` // all configured storefronts
-	GeneratedAt string        `json:"generated_at"`
-	Keywords    []keywordData `json:"keywords"`
+	Initialized bool            `json:"initialized"`
+	AppID       int64           `json:"app_id"`
+	Country     string          `json:"country"` // the market this response is for
+	Markets     []string        `json:"markets"` // all configured storefronts
+	GeneratedAt string          `json:"generated_at"`
+	Keywords    []keywordData   `json:"keywords"`
+	Phrases     []keywordData   `json:"phrases"`
+	Releases    []releaseMarker `json:"releases"`
 }
 
 type configResponse struct {
@@ -89,6 +128,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	mux.HandleFunc("/api/data", s.handleData)
+	mux.HandleFunc("/api/keyword", s.handleKeyword)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/run", s.handleRun)
 	return mux, nil
@@ -105,7 +145,9 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	resp := dataResponse{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Keywords:    []keywordData{},
+		Phrases:     []keywordData{},
 		Markets:     []string{},
+		Releases:    []releaseMarker{},
 	}
 	if cfg == nil {
 		writeJSON(w, http.StatusOK, resp)
@@ -116,16 +158,28 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		market = cfg.Markets[0] // default to the first storefront
 	}
-	kws, err := s.buildKeywords(cfg.AppID, market)
+	kws, phrases, err := s.buildMarket(cfg.AppID, market)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	releases, err := s.st.Releases(cfg.AppID, market.Country)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, rel := range releases {
+		resp.Releases = append(resp.Releases, releaseMarker{
+			Version: rel.Version, ReleasedAt: rel.ReleasedAt.Format(time.RFC3339),
+		})
+	}
+
 	resp.Initialized = true
 	resp.AppID = cfg.AppID
 	resp.Country = market.Country
 	resp.Markets = cfg.Countries()
 	resp.Keywords = kws
+	resp.Phrases = phrases
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -150,7 +204,30 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: "invalid request body"})
 			return
 		}
-		cfg := &config.Config{AppID: req.AppID, SearchLimit: req.SearchLimit, Markets: req.Markets}
+		// Merge onto the existing config so fields the setup form does not send
+		// (store_top, relevance, competitors) are preserved rather than wiped.
+		cfg := &config.Config{}
+		var prevPhrases map[string][]string
+		if cur, _ := s.snapshot(); cur != nil {
+			clone := *cur
+			cfg = &clone
+			prevPhrases = make(map[string][]string, len(cur.Markets))
+			for _, m := range cur.Markets {
+				prevPhrases[m.Country] = m.Phrases
+			}
+		}
+		cfg.AppID = req.AppID
+		cfg.SearchLimit = req.SearchLimit
+		cfg.Markets = req.Markets
+		// Phrases aren't in the setup form; carry forward a market's existing
+		// phrases when the request omits them, so a Save never drops them.
+		for i, m := range cfg.Markets {
+			if len(m.Phrases) == 0 {
+				if p, ok := prevPhrases[config.NormalizeCountry(m.Country)]; ok {
+					cfg.Markets[i].Phrases = p
+				}
+			}
+		}
 		cfg.Normalize()
 		if err := cfg.Validate(); err != nil {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: err.Error()})
@@ -201,9 +278,24 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
+	crit := track.ResolveRelevance(r.Context(), s.client, cfg.AppID, cfg.Markets[0].Country, cfg.Relevance)
+
 	total := track.Result{At: time.Now().UTC()}
 	for _, m := range markets {
-		res, err := track.RunOnce(r.Context(), s.st, cfg.AppID, m.Country, m.Keywords, cfg.SearchLimit, s.client, runDelay, nil)
+		// Version marker (non-fatal, mirrors the CLI run path).
+		_ = track.CaptureRelease(r.Context(), s.client, s.st, cfg.AppID, m.Country)
+		rc := track.RunConfig{
+			AppID:       cfg.AppID,
+			Country:     m.Country,
+			Keywords:    m.Terms(), // keywords + phrases, tracked together
+			SearchLimit: cfg.SearchLimit,
+			StoreTop:    cfg.StoreTop,
+			Weights:     metrics.DefaultWeights,
+			Relevance:   crit,
+			Client:      s.client,
+			Delay:       runDelay,
+		}
+		res, err := track.RunOnce(r.Context(), s.st, rc, nil)
 		total.Stored += res.Stored
 		total.Failures += res.Failures
 		if err != nil {
@@ -216,25 +308,31 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, total)
 }
 
-// buildKeywords assembles one series per keyword of a market, preserving the
-// market's keyword order so the dashboard is stable.
-func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, error) {
+// buildMarket assembles the keyword and phrase sections of a market from a
+// single history read, preserving each group's configured order.
+func (s *Server) buildMarket(appID int64, m config.Market) (keywords, phrases []keywordData, err error) {
 	history, err := s.st.History(appID, m.Country)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	byKeyword := make(map[string][]point, len(m.Keywords))
+	byKeyword := make(map[string][]point)
+	latest := make(map[string]store.Snapshot)
 	for _, snap := range history {
 		byKeyword[snap.Keyword] = append(byKeyword[snap.Keyword], point{
 			TS:       snap.Timestamp.Format(time.RFC3339),
 			Position: snap.Position,
 			Found:    snap.Found,
 		})
+		latest[snap.Keyword] = snap // history is ts-ascending, so the last wins
 	}
+	return section(m.Keywords, byKeyword, latest), section(m.Phrases, byKeyword, latest), nil
+}
 
-	out := make([]keywordData, 0, len(m.Keywords))
-	for _, kw := range m.Keywords {
+// section builds the per-term data for one group (keywords or phrases).
+func section(terms []string, byKeyword map[string][]point, latest map[string]store.Snapshot) []keywordData {
+	out := make([]keywordData, 0, len(terms))
+	for _, kw := range terms {
 		series := byKeyword[kw]
 		kd := keywordData{Keyword: kw, Series: series}
 		if n := len(series); n > 0 {
@@ -243,9 +341,78 @@ func (s *Server) buildKeywords(appID int64, m config.Market) ([]keywordData, err
 				kd.Previous = &series[n-2]
 			}
 		}
+		if snap, ok := latest[kw]; ok {
+			kd.Difficulty = snap.Difficulty
+			kd.Relevance = snap.Relevance
+			kd.Narrow = snap.Narrow
+			kd.ResultCount = snap.ResultCount
+		}
 		out = append(out, kd)
 	}
-	return out, nil
+	return out
+}
+
+// handleKeyword serves the on-demand detail for one keyword: the latest
+// snapshot's top results and each competitor's rank-over-time series.
+func (s *Server) handleKeyword(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.snapshot()
+	keyword := r.URL.Query().Get("keyword")
+	resp := keywordDetail{Keyword: keyword, Top: []resultRow{}, Competitors: []competitorSeries{}}
+	if cfg == nil || keyword == "" {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	market, ok := cfg.Market(r.URL.Query().Get("country"))
+	if !ok {
+		market = cfg.Markets[0]
+	}
+
+	snap, found, err := s.st.LatestForKeyword(cfg.AppID, market.Country, keyword)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	results, err := s.st.Results(snap.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	const topN = 10
+	for i, res := range results {
+		if i >= topN {
+			break
+		}
+		resp.Top = append(resp.Top, resultRow{
+			Position: res.Position, TrackID: res.TrackID, Name: res.Name,
+			RatingCount: res.RatingCount, RatingAvg: res.RatingAvg, Genre: res.Genre,
+		})
+	}
+
+	ids := make([]int64, 0, len(cfg.Competitors))
+	for _, c := range cfg.Competitors {
+		ids = append(ids, c.ID)
+	}
+	seriesByID, err := s.st.CompetitorSeries(cfg.AppID, market.Country, keyword, ids)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, c := range cfg.Competitors {
+		cs := competitorSeries{ID: c.ID, Name: c.Name, Series: []point{}}
+		for _, pp := range seriesByID[c.ID] {
+			cs.Series = append(cs.Series, point{
+				TS: pp.Timestamp.Format(time.RFC3339), Position: pp.Position, Found: true,
+			})
+		}
+		resp.Competitors = append(resp.Competitors, cs)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

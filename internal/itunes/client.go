@@ -21,10 +21,39 @@ import (
 // the client at an httptest server.
 var BaseURL = "https://itunes.apple.com/search"
 
-// App is a single search result, trimmed to the fields asokit needs.
+// LookupURL is the iTunes Lookup endpoint (metadata for one app by id). A var
+// so tests can redirect it.
+var LookupURL = "https://itunes.apple.com/lookup"
+
+// MaxResults is the hard ceiling the Search API enforces on the number of
+// results per term. A response at this count is a ceiling, not a true total.
+const MaxResults = 200
+
+// App is a single search result, trimmed to the fields asokit needs. Beyond
+// identity (ID/Name), these fields feed the competition and relevance metrics;
+// the Search API already returns them, so capturing them needs no extra request.
 type App struct {
 	ID   int64  `json:"trackId"`
 	Name string `json:"trackName"`
+
+	// RatingCount is the number of ratings for the current release line
+	// (userRatingCount). A proxy for how established a competitor is.
+	RatingCount int `json:"userRatingCount"`
+	// RatingAvg is the average star rating (averageUserRating), 0–5.
+	RatingAvg float64 `json:"averageUserRating"`
+	// Genre is the primary App Store category name, e.g. "Finance".
+	Genre string `json:"primaryGenreName"`
+	// GenreIDs are the numeric category ids as strings, e.g. ["6015","6007"].
+	// The API returns these as strings, so keep them as strings.
+	GenreIDs []string `json:"genreIds"`
+	// ReleaseDate is when the app first shipped (RFC3339 string from the API).
+	ReleaseDate string `json:"releaseDate"`
+	// CurrentVersionReleaseDate is when the current version shipped.
+	CurrentVersionReleaseDate string `json:"currentVersionReleaseDate"`
+	// SellerName is the developer/publisher name.
+	SellerName string `json:"sellerName"`
+	// Version is the current version string, e.g. "1.1.8" (populated by Lookup).
+	Version string `json:"version"`
 }
 
 type searchResponse struct {
@@ -49,8 +78,8 @@ func New() *Client {
 // Search returns the software results for term in the given country storefront,
 // in the API's relevance order. limit is clamped to the API maximum of 200.
 func (c *Client) Search(ctx context.Context, term, country string, limit int) ([]App, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 200
+	if limit <= 0 || limit > MaxResults {
+		limit = MaxResults
 	}
 
 	q := url.Values{}
@@ -60,6 +89,32 @@ func (c *Client) Search(ctx context.Context, term, country string, limit int) ([
 	q.Set("limit", strconv.Itoa(limit))
 
 	reqURL := BaseURL + "?" + q.Encode()
+	return c.get(ctx, reqURL, fmt.Sprintf("search %q", term))
+}
+
+// Lookup fetches metadata for a single app by id in the given country, used to
+// resolve the app's own genre (for the relevance metric) and its current
+// version (for version markers). Returns the first matching app.
+func (c *Client) Lookup(ctx context.Context, id int64, country string) (App, error) {
+	q := url.Values{}
+	q.Set("id", strconv.FormatInt(id, 10))
+	q.Set("country", country)
+	q.Set("entity", "software")
+
+	reqURL := LookupURL + "?" + q.Encode()
+	results, err := c.get(ctx, reqURL, fmt.Sprintf("lookup id %d", id))
+	if err != nil {
+		return App{}, err
+	}
+	if len(results) == 0 {
+		return App{}, fmt.Errorf("itunes lookup id %d: no result", id)
+	}
+	return results[0], nil
+}
+
+// get performs a GET and decodes the standard {resultCount, results} body.
+// label names the operation for error messages and typed errors.
+func (c *Client) get(ctx context.Context, reqURL, label string) ([]App, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
@@ -68,36 +123,53 @@ func (c *Client) Search(ctx context.Context, term, country string, limit int) ([
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("itunes search %q: %w", term, err)
+		return nil, fmt.Errorf("itunes %s: %w", label, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Surface throttling clearly so callers can back off.
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
-		return nil, &RateLimitError{StatusCode: resp.StatusCode, Term: term}
+		return nil, &RateLimitError{StatusCode: resp.StatusCode, Label: label}
+	}
+	// 5xx is a transient server-side problem; surface it as a distinct type so
+	// callers can retry it the same way they retry throttling.
+	if resp.StatusCode >= 500 {
+		return nil, &TransientError{StatusCode: resp.StatusCode, Label: label}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("itunes search %q: unexpected status %d", term, resp.StatusCode)
+		return nil, fmt.Errorf("itunes %s: unexpected status %d", label, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
-		return nil, fmt.Errorf("itunes search %q: reading body: %w", term, err)
+		return nil, fmt.Errorf("itunes %s: reading body: %w", label, err)
 	}
 
 	var sr searchResponse
 	if err := json.Unmarshal(body, &sr); err != nil {
-		return nil, fmt.Errorf("itunes search %q: decoding response: %w", term, err)
+		return nil, fmt.Errorf("itunes %s: decoding response: %w", label, err)
 	}
 	return sr.Results, nil
 }
 
-// RateLimitError indicates the API throttled the request.
+// RateLimitError indicates the API throttled the request. Label names the
+// operation, e.g. `search "sleep"` or `lookup id 42`.
 type RateLimitError struct {
 	StatusCode int
-	Term       string
+	Label      string
 }
 
 func (e *RateLimitError) Error() string {
-	return fmt.Sprintf("itunes search %q: rate limited (status %d)", e.Term, e.StatusCode)
+	return fmt.Sprintf("itunes %s: rate limited (status %d)", e.Label, e.StatusCode)
+}
+
+// TransientError indicates a temporary server-side failure (HTTP 5xx) that is
+// worth retrying. Label names the operation.
+type TransientError struct {
+	StatusCode int
+	Label      string
+}
+
+func (e *TransientError) Error() string {
+	return fmt.Sprintf("itunes %s: server error (status %d)", e.Label, e.StatusCode)
 }
