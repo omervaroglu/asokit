@@ -96,7 +96,16 @@ CREATE TABLE IF NOT EXISTS results (
 	genre        TEXT    NOT NULL,
 	release_date TEXT    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_results_snapshot ON results (snapshot_id);`
+CREATE INDEX IF NOT EXISTS idx_results_snapshot ON results (snapshot_id);
+
+CREATE TABLE IF NOT EXISTS releases (
+	app_id      INTEGER NOT NULL,
+	country     TEXT    NOT NULL,
+	version     TEXT    NOT NULL,
+	released_at TEXT    NOT NULL,
+	UNIQUE (app_id, country, version)
+);
+CREATE INDEX IF NOT EXISTS idx_releases_lookup ON releases (app_id, country, released_at);`
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrating schema: %w", err)
 	}
@@ -212,6 +221,57 @@ func (s *Store) InsertSnapshot(snap Snapshot, results []Result) (int64, error) {
 		return 0, fmt.Errorf("committing snapshot: %w", err)
 	}
 	return id, nil
+}
+
+// Release is one app version and when it shipped, for drawing version markers.
+type Release struct {
+	Version    string
+	ReleasedAt time.Time
+}
+
+// UpsertRelease records an app version for a storefront, ignoring a version
+// already stored (versions are deduplicated per app+country).
+func (s *Store) UpsertRelease(appID int64, country, version string, releasedAt time.Time) error {
+	if version == "" {
+		return nil // nothing useful to record
+	}
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO releases (app_id, country, version, released_at)
+		 VALUES (?, ?, ?, ?)`,
+		appID, country, version, releasedAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("upserting release: %w", err)
+	}
+	return nil
+}
+
+// Releases returns the stored versions for an app and country, oldest first.
+func (s *Store) Releases(appID int64, country string) ([]Release, error) {
+	rows, err := s.db.Query(
+		`SELECT version, released_at FROM releases
+		 WHERE app_id = ? AND country = ? ORDER BY released_at`,
+		appID, country,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying releases: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Release
+	for rows.Next() {
+		var (
+			version string
+			ts      string
+		)
+		if err := rows.Scan(&version, &ts); err != nil {
+			return nil, fmt.Errorf("scanning release: %w", err)
+		}
+		r := Release{Version: version}
+		r.ReleasedAt, _ = time.Parse(time.RFC3339, ts)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // PositionPoint is one competitor rank at one time, for a per-keyword series.

@@ -304,7 +304,7 @@ function cardInnerHTML(kw) {
   const asof = kw.current ? `as of ${fmtDateTime(kw.current.ts)}` : "no data yet";
   return `<p class="kw">${escapeHTML(kw.keyword)}</p>` +
     `<div class="rankrow">${rankHTML}${deltaHTML}</div>` +
-    chartSVG(kw.series) +
+    chartSVG(kw.series, DATA.releases) +
     metricsLineHTML(kw) +
     `<div class="asof">${asof}</div>` +
     (OPEN.has(kw.keyword) ? `<div class="detail"><div class="loading">Loading…</div></div>` : "");
@@ -411,7 +411,7 @@ function fmtCount(n) {
 const VW = 300, VH = 120, PX0 = 30, PX1 = 292, PY0 = 12, PY1 = 98;
 const PLOTW = PX1 - PX0, PLOTH = PY1 - PY0;
 
-function chartSVG(series) {
+function chartSVG(series, releases) {
   const found = series.filter((p) => p.found);
   if (!found.length) {
     return `<svg class="chart" viewBox="0 0 ${VW} ${VH}" role="img" aria-label="no ranked data">
@@ -435,6 +435,19 @@ function chartSVG(series) {
     grid += `<text x="${PX0 - 6}" y="${y}" text-anchor="end" dominant-baseline="middle" fill="var(--muted)" font-size="10">#${t}</text>`;
   }
 
+  // Version markers: a dashed vertical line + label where a release date falls
+  // inside the chart's time span. Needs a real span (≥2 distinct times).
+  let markers = "";
+  if (releases && releases.length && series.length > 1 && tMax > tMin) {
+    for (const rel of releases) {
+      const t = Date.parse(rel.released_at);
+      if (isNaN(t) || t < tMin || t > tMax) continue;
+      const x = (PX0 + (PLOTW * (t - tMin)) / (tMax - tMin)).toFixed(1);
+      markers += `<line x1="${x}" y1="${PY0}" x2="${x}" y2="${PY1}" stroke="var(--baseline)" stroke-width="1" stroke-dasharray="3,3"/>`;
+      markers += `<text x="${x}" y="8" text-anchor="middle" fill="var(--muted)" font-size="9">${escapeHTML(rel.version)}</text>`;
+    }
+  }
+
   let dPath = "", dots = "", hits = "", penDown = false;
   series.forEach((p, i) => {
     const x = xOf(i, times[i]);
@@ -453,7 +466,7 @@ function chartSVG(series) {
       : "");
 
   return `<svg class="chart" viewBox="0 0 ${VW} ${VH}" role="img" aria-label="rank over time">
-    ${grid}
+    ${grid}${markers}
     <line class="crosshair" x1="0" y1="${PY0}" x2="0" y2="${PY1}" stroke="var(--baseline)" stroke-width="1" style="display:none"/>
     <path d="${dPath.trim()}" fill="none" stroke="var(--series)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     ${dots}${hits}${xlabels}

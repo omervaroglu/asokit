@@ -135,6 +135,33 @@ func TestRunOnceStoresResultsAndMetrics(t *testing.T) {
 	}
 }
 
+func TestCaptureRelease(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"resultCount":1,"results":[{"trackId":42,"version":"1.1.8","currentVersionReleaseDate":"2026-10-01T00:00:00Z"}]}`))
+	}))
+	defer srv.Close()
+	old := itunes.LookupURL
+	itunes.LookupURL = srv.URL
+	defer func() { itunes.LookupURL = old }()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	if err := CaptureRelease(context.Background(), itunes.New(), st, 42, "us"); err != nil {
+		t.Fatalf("CaptureRelease: %v", err)
+	}
+	rels, err := st.Releases(42, "us")
+	if err != nil {
+		t.Fatalf("Releases: %v", err)
+	}
+	if len(rels) != 1 || rels[0].Version != "1.1.8" {
+		t.Fatalf("releases = %+v, want one 1.1.8", rels)
+	}
+}
+
 // fastBackoff shrinks the retry delay for the duration of a test so it does not
 // sleep for real seconds, and restores it afterwards.
 func fastBackoff(t *testing.T) {

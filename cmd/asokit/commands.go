@@ -53,6 +53,11 @@ func cmdRun(ctx context.Context, args []string) error {
 	var at time.Time
 	for _, m := range cfg.Markets {
 		fmt.Printf("[%s]\n", strings.ToUpper(m.Country))
+		// Version marker: record the app's current version for this storefront.
+		// Non-fatal — a failed lookup must not abort keyword tracking.
+		if err := track.CaptureRelease(ctx, client, db, cfg.AppID, m.Country); err != nil {
+			fmt.Fprintf(os.Stderr, "  (version lookup failed: %v)\n", err)
+		}
 		rc := track.RunConfig{
 			AppID:       cfg.AppID,
 			Country:     m.Country,

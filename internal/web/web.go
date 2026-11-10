@@ -70,13 +70,19 @@ type keywordDetail struct {
 	Competitors []competitorSeries `json:"competitors"`
 }
 
+type releaseMarker struct {
+	Version    string `json:"version"`
+	ReleasedAt string `json:"released_at"`
+}
+
 type dataResponse struct {
-	Initialized bool          `json:"initialized"`
-	AppID       int64         `json:"app_id"`
-	Country     string        `json:"country"` // the market this response is for
-	Markets     []string      `json:"markets"` // all configured storefronts
-	GeneratedAt string        `json:"generated_at"`
-	Keywords    []keywordData `json:"keywords"`
+	Initialized bool            `json:"initialized"`
+	AppID       int64           `json:"app_id"`
+	Country     string          `json:"country"` // the market this response is for
+	Markets     []string        `json:"markets"` // all configured storefronts
+	GeneratedAt string          `json:"generated_at"`
+	Keywords    []keywordData   `json:"keywords"`
+	Releases    []releaseMarker `json:"releases"`
 }
 
 type configResponse struct {
@@ -139,6 +145,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Keywords:    []keywordData{},
 		Markets:     []string{},
+		Releases:    []releaseMarker{},
 	}
 	if cfg == nil {
 		writeJSON(w, http.StatusOK, resp)
@@ -154,6 +161,17 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	releases, err := s.st.Releases(cfg.AppID, market.Country)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, rel := range releases {
+		resp.Releases = append(resp.Releases, releaseMarker{
+			Version: rel.Version, ReleasedAt: rel.ReleasedAt.Format(time.RFC3339),
+		})
+	}
+
 	resp.Initialized = true
 	resp.AppID = cfg.AppID
 	resp.Country = market.Country
@@ -247,6 +265,8 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	total := track.Result{At: time.Now().UTC()}
 	for _, m := range markets {
+		// Version marker (non-fatal, mirrors the CLI run path).
+		_ = track.CaptureRelease(r.Context(), s.client, s.st, cfg.AppID, m.Country)
 		rc := track.RunConfig{
 			AppID:       cfg.AppID,
 			Country:     m.Country,

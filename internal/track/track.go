@@ -126,6 +126,26 @@ func topResults(apps []itunes.App, n int) []store.Result {
 	return out
 }
 
+// CaptureRelease looks up the app's current version for a storefront and
+// records it (deduplicated). It is non-fatal by design: callers log the error
+// and continue, since a missing version marker must never fail a run.
+func CaptureRelease(ctx context.Context, client *itunes.Client, st *store.Store, appID int64, country string) error {
+	app, err := client.Lookup(ctx, appID, country)
+	if err != nil {
+		return err
+	}
+	if app.Version == "" || app.CurrentVersionReleaseDate == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, app.CurrentVersionReleaseDate)
+	if err != nil {
+		if t, err = time.Parse("2006-01-02", app.CurrentVersionReleaseDate); err != nil {
+			return nil // unparseable date — skip quietly rather than error
+		}
+	}
+	return st.UpsertRelease(appID, country, app.Version, t)
+}
+
 // ResolveRelevance builds the relevance criteria for a run. When the config
 // supplies no genre ids it resolves the tracked app's own category via a single
 // Lookup. A lookup failure is non-fatal — relevance degrades to whatever title

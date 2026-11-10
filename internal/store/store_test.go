@@ -170,6 +170,32 @@ func TestCompetitorPositions(t *testing.T) {
 	}
 }
 
+func TestReleasesDedupAndOrder(t *testing.T) {
+	s := newTestStore(t)
+	d := func(day int) time.Time { return time.Date(2026, 1, day, 0, 0, 0, 0, time.UTC) }
+
+	must(t, s.UpsertRelease(1, "us", "1.1.0", d(3)))
+	must(t, s.UpsertRelease(1, "us", "1.0.0", d(1)))
+	must(t, s.UpsertRelease(1, "us", "1.1.0", d(9))) // duplicate version — ignored
+	must(t, s.UpsertRelease(1, "de", "1.0.0", d(1))) // other storefront
+	must(t, s.UpsertRelease(1, "us", "", d(5)))      // empty version — skipped
+
+	rels, err := s.Releases(1, "us")
+	if err != nil {
+		t.Fatalf("Releases: %v", err)
+	}
+	if len(rels) != 2 {
+		t.Fatalf("got %d releases, want 2 (dedup + skip empty): %+v", len(rels), rels)
+	}
+	// Oldest first, and the duplicate kept its first date (day 3, not 9).
+	if rels[0].Version != "1.0.0" || rels[1].Version != "1.1.0" {
+		t.Errorf("order = %+v, want 1.0.0 then 1.1.0", rels)
+	}
+	if !rels[1].ReleasedAt.Equal(d(3)) {
+		t.Errorf("duplicate release date = %v, want %v (first write kept)", rels[1].ReleasedAt, d(3))
+	}
+}
+
 func TestLatestForKeywordAndCompetitorSeries(t *testing.T) {
 	s := newTestStore(t)
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
