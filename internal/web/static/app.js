@@ -29,15 +29,23 @@ const marketsEl = document.getElementById("markets");
 const controlsEl = document.getElementById("controls");
 const metaEl = document.getElementById("meta");
 
-let CONFIG = null;     // { initialized, error, app_id, search_limit, markets:[{country,keywords}] }
-let DATA = null;       // /api/data response
+let CONFIG = null;     // /api/config: { initialized, app_id, search_limit, markets, apps:[{id,name,markets,...}] }
+let DATA = null;       // /api/data response (apps:[{id,name,icon_url}])
+let CURRENT_APP = 0;   // selected app id
 let CURRENT = "";      // selected market (country code)
 let VIEW = "charts";   // charts | table
-let SETUP_MODE = "first"; // first | add | edit
+let SETUP_MODE = "first"; // first | app | add | edit
 let EDIT_COUNTRY = "";
 let SORT = { col: null, dir: 1 }; // table sort (col key, 1 asc / -1 desc)
 const OPEN = new Set();           // keywords whose card detail is expanded
 const DETAILS = {};               // cache: "country|keyword" -> detail payload
+
+// currentApp returns the selected app's config object (id, name, markets), or
+// null; appMarkets is its market list.
+function currentApp() {
+  return ((CONFIG && CONFIG.apps) || []).find((a) => a.id === CURRENT_APP) || null;
+}
+function appMarkets() { const a = currentApp(); return a ? a.markets : []; }
 
 // ---------- control bar + market tabs ---------------------------------------
 function mkBtn(label, onClick, opts = {}) {
@@ -64,7 +72,7 @@ function renderControls(showDashControls) {
 function renderMarketTabs() {
   marketsEl.innerHTML = "";
   if (!CONFIG || !CONFIG.initialized) return;
-  for (const m of CONFIG.markets) {
+  for (const m of appMarkets()) {
     const b = document.createElement("button");
     b.className = "tab";
     b.textContent = m.country.toUpperCase();
@@ -78,6 +86,46 @@ function renderMarketTabs() {
   add.addEventListener("click", () => showSetup("add"));
   marketsEl.appendChild(add);
 }
+
+// renderAppSwitcher draws one chip (icon + name) per tracked app, plus "＋ App".
+// It prefers DATA.apps (which carries icons) and falls back to CONFIG.apps
+// before the first data load.
+const appsEl = document.getElementById("apps");
+function renderAppSwitcher() {
+  appsEl.innerHTML = "";
+  if (!CONFIG || !CONFIG.initialized) return;
+  const list = (DATA && DATA.apps && DATA.apps.length)
+    ? DATA.apps
+    : (CONFIG.apps || []).map((a) => ({ id: a.id, name: a.name, icon_url: "" }));
+  for (const a of list) {
+    const label = a.name || ("App " + a.id);
+    const b = document.createElement("button");
+    b.className = "appchip";
+    b.title = String(a.id);
+    b.setAttribute("aria-selected", String(a.id === CURRENT_APP));
+    const icon = a.icon_url
+      ? `<img src="${encodeURI(a.icon_url)}" alt="" loading="lazy">`
+      : `<span class="noicon">${escapeHTML(String(label).slice(0, 1).toUpperCase())}</span>`;
+    b.innerHTML = `${icon}<span>${escapeHTML(label)}</span>`;
+    b.addEventListener("click", () => selectApp(a.id));
+    appsEl.appendChild(b);
+  }
+  const add = document.createElement("button");
+  add.className = "appchip add";
+  add.textContent = "＋ App";
+  add.addEventListener("click", () => showSetup("app"));
+  appsEl.appendChild(add);
+}
+function selectApp(id) {
+  if (id === CURRENT_APP) return;
+  CURRENT_APP = id;
+  OPEN.clear();
+  const ms = appMarkets();
+  CURRENT = ms.length ? ms[0].country : "";
+  renderAppSwitcher();
+  renderMarketTabs();
+  loadData();
+}
 function setView(v) {
   VIEW = v;
   chartsEl.classList.toggle("hidden", v !== "charts");
@@ -90,6 +138,7 @@ function showDashboard() {
   setupEl.classList.add("hidden");
   dashEl.classList.remove("hidden");
   renderControls(true);
+  renderAppSwitcher();
   renderMarketTabs();
 }
 function showSetup(mode) {
@@ -97,17 +146,22 @@ function showSetup(mode) {
   dashEl.classList.add("hidden");
   setupEl.classList.remove("hidden");
   renderControls(false);
+  appsEl.innerHTML = "";
   marketsEl.innerHTML = "";
   metaEl.textContent = "";
 
-  const title = { first: "Set up tracking", add: "Add a market", edit: `Edit market: ${CURRENT.toUpperCase()}` }[mode];
+  const title = {
+    first: "Set up tracking", app: "Add an app",
+    add: "Add a market", edit: `Edit market: ${CURRENT.toUpperCase()}`,
+  }[mode];
   document.getElementById("setup-title").textContent = title;
-  // app_id is global: editable on first/edit, hidden on add (same app).
+  // The app id field is shown when choosing/creating an app (first/app/edit) and
+  // hidden when adding a market to the current app.
   document.getElementById("field-appid").classList.toggle("hidden", mode === "add");
   document.getElementById("hint-appid").classList.toggle("hidden", mode === "add");
   document.getElementById("f-cancel").classList.toggle("hidden", !(CONFIG && CONFIG.initialized));
   document.getElementById("f-remove").classList.toggle("hidden",
-    !(mode === "edit" && CONFIG && CONFIG.markets.length > 1));
+    !(mode === "edit" && appMarkets().length > 1));
 
   const err = document.getElementById("f-error");
   err.textContent = (mode === "first" && CONFIG && CONFIG.error) ? CONFIG.error : "";
@@ -116,9 +170,10 @@ function showSetup(mode) {
   const country = document.getElementById("f-country");
   const kw = document.getElementById("f-keywords");
 
-  appid.value = CONFIG && CONFIG.app_id ? CONFIG.app_id : "";
+  // Edit keeps the current app's id; first/app start from a blank id.
+  appid.value = mode === "edit" && CURRENT_APP ? CURRENT_APP : "";
   if (mode === "edit") {
-    const m = (CONFIG.markets || []).find((x) => x.country === CURRENT);
+    const m = appMarkets().find((x) => x.country === CURRENT);
     EDIT_COUNTRY = CURRENT;
     country.value = CURRENT;
     country.readOnly = false; // editable; changing it is confirmed on save
@@ -139,8 +194,10 @@ async function loadConfig() {
   if (!res.ok) throw new Error("HTTP " + res.status);
   CONFIG = await res.json();
   if (CONFIG.initialized) {
-    const countries = CONFIG.markets.map((m) => m.country);
-    if (!countries.includes(CURRENT)) CURRENT = countries[0];
+    const apps = CONFIG.apps || [];
+    if (!apps.some((a) => a.id === CURRENT_APP)) CURRENT_APP = apps.length ? apps[0].id : 0;
+    const ms = appMarkets();
+    if (!ms.some((m) => m.country === CURRENT)) CURRENT = ms.length ? ms[0].country : "";
     showDashboard();
     await loadData();
   } else {
@@ -148,11 +205,15 @@ async function loadConfig() {
   }
 }
 async function loadData() {
-  // Data changed (new market or a fresh run): stale detail payloads must go.
+  // Data changed (new app/market or a fresh run): stale detail payloads must go.
   for (const k of Object.keys(DETAILS)) delete DETAILS[k];
-  const res = await fetch("api/data?country=" + encodeURIComponent(CURRENT), { cache: "no-store" });
+  const q = `api/data?app=${encodeURIComponent(CURRENT_APP)}&country=${encodeURIComponent(CURRENT)}`;
+  const res = await fetch(q, { cache: "no-store" });
   if (!res.ok) throw new Error("HTTP " + res.status);
   DATA = await res.json();
+  // The server is authoritative about which app/market it answered for.
+  if (DATA.app_id) CURRENT_APP = DATA.app_id;
+  if (DATA.country) CURRENT = DATA.country;
   render();
 }
 
@@ -178,14 +239,15 @@ async function saveConfig() {
   const country = document.getElementById("f-country").value.trim().toLowerCase();
   const keywords = document.getElementById("f-keywords").value
     .split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
-  const appID = SETUP_MODE === "add" && CONFIG
-    ? CONFIG.app_id
+  // "add" edits the current app (its id); every other mode reads the id field.
+  const appID = SETUP_MODE === "add"
+    ? CURRENT_APP
     : parseInt(document.getElementById("f-appid").value, 10);
   const errEl = document.getElementById("f-error");
   errEl.textContent = "";
 
   let markets;
-  const existing = (CONFIG && CONFIG.markets ? CONFIG.markets : []).map(strip);
+  const existing = appMarkets().map(strip);
   if (SETUP_MODE === "edit") {
     if (country !== EDIT_COUNTRY && country) {
       const ok = window.confirm(
@@ -198,6 +260,7 @@ async function saveConfig() {
   } else if (SETUP_MODE === "add") {
     markets = [...existing, { country, keywords }];
   } else {
+    // first / app: a fresh app with its first market.
     markets = [{ country, keywords }];
   }
 
@@ -207,6 +270,7 @@ async function saveConfig() {
     const r = await postConfig(appID, markets);
     if (!r.ok) { errEl.textContent = r.body.error || ("HTTP " + r.status); return; }
     CONFIG = r.body;
+    CURRENT_APP = appID;
     CURRENT = country;
     showDashboard();
     await loadData();
@@ -219,13 +283,14 @@ async function saveConfig() {
 }
 
 async function removeMarket() {
-  if (!CONFIG || CONFIG.markets.length <= 1) return;
+  if (appMarkets().length <= 1) return;
   if (!window.confirm(`Remove the ${CURRENT.toUpperCase()} market from tracking? Its stored history stays in the database.`)) return;
-  const markets = CONFIG.markets.map(strip).filter((m) => m.country !== CURRENT);
-  const r = await postConfig(CONFIG.app_id, markets);
+  const markets = appMarkets().map(strip).filter((m) => m.country !== CURRENT);
+  const r = await postConfig(CURRENT_APP, markets);
   if (!r.ok) { toast(r.body.error || "Remove failed"); return; }
   CONFIG = r.body;
-  CURRENT = CONFIG.markets[0].country;
+  const ms = appMarkets();
+  CURRENT = ms.length ? ms[0].country : "";
   showDashboard();
   await loadData();
   toast("Market removed");
@@ -235,7 +300,7 @@ async function runNow() {
   const btn = document.getElementById("run");
   if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
   try {
-    const res = await fetch("api/run?country=" + encodeURIComponent(CURRENT), { method: "POST" });
+    const res = await fetch(`api/run?app=${encodeURIComponent(CURRENT_APP)}&country=${encodeURIComponent(CURRENT)}`, { method: "POST" });
     const body = await res.json();
     if (!res.ok) toast(body.error ? "Run failed: " + body.error : "Run failed");
     else toast(`Stored ${body.stored} keyword(s)` + (body.failures ? `, ${body.failures} failed` : ""));
@@ -250,8 +315,11 @@ async function runNow() {
 // ---------- render dashboard ------------------------------------------------
 function render() {
   if (!DATA) return;
+  renderAppSwitcher();
+  const sel = (DATA.apps || []).find((a) => a.id === DATA.app_id);
+  const who = sel && sel.name ? sel.name : `app ${DATA.app_id}`;
   metaEl.textContent =
-    `app ${DATA.app_id} · ${(DATA.country || "").toUpperCase()} · ${DATA.keywords.length} keyword(s)`;
+    `${who} · ${(DATA.country || "").toUpperCase()} · ${DATA.keywords.length} keyword(s)`;
   renderOverview();
   renderCharts();
   renderTable();

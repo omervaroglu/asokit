@@ -127,13 +127,17 @@ func topResults(apps []itunes.App, n int) []store.Result {
 }
 
 // CaptureRelease looks up the app's current version for a storefront and
-// records it (deduplicated). It is non-fatal by design: callers log the error
-// and continue, since a missing version marker must never fail a run.
+// records it (deduplicated), and refreshes the app's cached display metadata
+// (name + icon) from the same lookup. It is non-fatal by design: callers log the
+// error and continue, since a missing version marker must never fail a run.
 func CaptureRelease(ctx context.Context, client *itunes.Client, st *store.Store, appID int64, country string) error {
 	app, err := client.Lookup(ctx, appID, country)
 	if err != nil {
 		return err
 	}
+	// Cache the app's name + icon for the dashboard switcher (best-effort: a
+	// metadata write must never abort tracking).
+	_ = st.UpsertAppMeta(appID, app.Name, app.ArtworkURL)
 	if app.Version == "" || app.CurrentVersionReleaseDate == "" {
 		return nil
 	}

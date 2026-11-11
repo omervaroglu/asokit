@@ -137,7 +137,7 @@ func TestRunOnceStoresResultsAndMetrics(t *testing.T) {
 
 func TestCaptureRelease(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"resultCount":1,"results":[{"trackId":42,"version":"1.1.8","currentVersionReleaseDate":"2026-10-01T00:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"resultCount":1,"results":[{"trackId":42,"trackName":"Calm","artworkUrl512":"https://cdn/calm.png","version":"1.1.8","currentVersionReleaseDate":"2026-10-01T00:00:00Z"}]}`))
 	}))
 	defer srv.Close()
 	old := itunes.LookupURL
@@ -159,6 +159,11 @@ func TestCaptureRelease(t *testing.T) {
 	}
 	if len(rels) != 1 || rels[0].Version != "1.1.8" {
 		t.Fatalf("releases = %+v, want one 1.1.8", rels)
+	}
+	// The same lookup also caches the app's name + icon for the switcher.
+	meta, ok, err := st.AppMeta(42)
+	if err != nil || !ok || meta.Name != "Calm" || meta.IconURL != "https://cdn/calm.png" {
+		t.Fatalf("app meta = %+v ok=%v err=%v, want Calm + icon", meta, ok, err)
 	}
 }
 

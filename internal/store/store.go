@@ -105,7 +105,14 @@ CREATE TABLE IF NOT EXISTS releases (
 	released_at TEXT    NOT NULL,
 	UNIQUE (app_id, country, version)
 );
-CREATE INDEX IF NOT EXISTS idx_releases_lookup ON releases (app_id, country, released_at);`
+CREATE INDEX IF NOT EXISTS idx_releases_lookup ON releases (app_id, country, released_at);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+	app_id     INTEGER PRIMARY KEY,
+	name       TEXT NOT NULL,
+	icon_url   TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);`
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrating schema: %w", err)
 	}
@@ -272,6 +279,55 @@ func (s *Store) Releases(appID int64, country string) ([]Release, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// AppMeta is cached display metadata for a tracked app (its name and icon),
+// captured from the App Store so the dashboard can show them without an extra
+// request on every page load.
+type AppMeta struct {
+	AppID     int64
+	Name      string
+	IconURL   string
+	UpdatedAt time.Time
+}
+
+// UpsertAppMeta stores (or refreshes) an app's display name and icon URL. A
+// blank name is ignored so a failed/partial lookup never wipes good metadata.
+func (s *Store) UpsertAppMeta(appID int64, name, iconURL string) error {
+	if name == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO app_meta (app_id, name, icon_url, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(app_id) DO UPDATE SET
+		   name = excluded.name, icon_url = excluded.icon_url, updated_at = excluded.updated_at`,
+		appID, name, iconURL, time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("upserting app meta: %w", err)
+	}
+	return nil
+}
+
+// AppMeta returns the cached metadata for an app. found reports whether any was
+// stored yet.
+func (s *Store) AppMeta(appID int64) (AppMeta, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT app_id, name, icon_url, updated_at FROM app_meta WHERE app_id = ?`, appID)
+	var (
+		m  AppMeta
+		ts string
+	)
+	switch err := row.Scan(&m.AppID, &m.Name, &m.IconURL, &ts); err {
+	case nil:
+		m.UpdatedAt, _ = time.Parse(time.RFC3339, ts)
+		return m, true, nil
+	case sql.ErrNoRows:
+		return AppMeta{}, false, nil
+	default:
+		return AppMeta{}, false, fmt.Errorf("querying app meta: %w", err)
+	}
 }
 
 // PositionPoint is one competitor rank at one time, for a per-keyword series.

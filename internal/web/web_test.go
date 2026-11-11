@@ -45,10 +45,11 @@ func do(h http.Handler, method, path string, body []byte) *httptest.ResponseReco
 }
 
 func cfgTR() *config.Config {
-	c := &config.Config{AppID: 1, SearchLimit: 200, Markets: []config.Market{
-		{Country: "tr", Keywords: []string{"sleep", "calm"}},
+	return &config.Config{SearchLimit: 200, Apps: []config.App{
+		{ID: 1, Markets: []config.Market{
+			{Country: "tr", Keywords: []string{"sleep", "calm"}},
+		}},
 	}}
-	return c
 }
 
 func TestDataWithHistory(t *testing.T) {
@@ -76,9 +77,11 @@ func TestDataWithHistory(t *testing.T) {
 
 // Switching markets must return that market's own series and never the other's.
 func TestDataPerMarketIsolated(t *testing.T) {
-	cfg := &config.Config{AppID: 1, SearchLimit: 200, Markets: []config.Market{
-		{Country: "tr", Keywords: []string{"uyku"}},
-		{Country: "de", Keywords: []string{"schlaf"}},
+	cfg := &config.Config{SearchLimit: 200, Apps: []config.App{
+		{ID: 1, Markets: []config.Market{
+			{Country: "tr", Keywords: []string{"uyku"}},
+			{Country: "de", Keywords: []string{"schlaf"}},
+		}},
 	}}
 	s, h := newServer(t, cfg)
 	t0 := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
@@ -101,10 +104,12 @@ func TestDataPerMarketIsolated(t *testing.T) {
 // /api/data must carry the latest-snapshot metrics for the table columns, and
 // /api/keyword must return the stored top results plus competitor series.
 func TestDataMetricsAndKeywordDetail(t *testing.T) {
-	cfg := &config.Config{AppID: 1, SearchLimit: 200, StoreTop: 50,
-		Competitors: []config.Competitor{{ID: 7, Name: "Seven"}},
-		Markets:     []config.Market{{Country: "tr", Keywords: []string{"kira"}}},
-	}
+	cfg := &config.Config{SearchLimit: 200, StoreTop: 50, Apps: []config.App{
+		{ID: 1,
+			Competitors: []config.Competitor{{ID: 7, Name: "Seven"}},
+			Markets:     []config.Market{{Country: "tr", Keywords: []string{"kira"}}},
+		},
+	}}
 	s, h := newServer(t, cfg)
 
 	diff, rel := 60.0, 4.0
@@ -190,10 +195,13 @@ func TestConfigPostThenGet(t *testing.T) {
 // than being wiped — the config-preservation guarantee from the spec.
 func TestConfigPostPreservesUneditedFields(t *testing.T) {
 	cfg := &config.Config{
-		AppID: 1, SearchLimit: 200, StoreTop: 25,
-		Relevance:   config.Relevance{GenreIDs: []string{"6015"}},
-		Competitors: []config.Competitor{{ID: 999, Name: "Rival"}},
-		Markets:     []config.Market{{Country: "tr", Keywords: []string{"uyku"}}},
+		SearchLimit: 200, StoreTop: 25, Apps: []config.App{
+			{ID: 1,
+				Relevance:   config.Relevance{GenreIDs: []string{"6015"}},
+				Competitors: []config.Competitor{{ID: 999, Name: "Rival"}},
+				Markets:     []config.Market{{Country: "tr", Keywords: []string{"uyku"}}},
+			},
+		},
 	}
 	s, h := newServer(t, cfg)
 
@@ -203,26 +211,27 @@ func TestConfigPostPreservesUneditedFields(t *testing.T) {
 		t.Fatalf("POST status = %d, body=%s", rr.Code, rr.Body.String())
 	}
 
+	app := s.cfg.Apps[0]
 	// The edited field changed...
-	if got := len(s.cfg.Markets[0].Keywords); got != 2 {
+	if got := len(app.Markets[0].Keywords); got != 2 {
 		t.Errorf("keywords not updated: %d", got)
 	}
 	// ...but the unedited fields are intact, both in memory and on disk.
 	if s.cfg.StoreTop != 25 {
 		t.Errorf("StoreTop wiped: %d", s.cfg.StoreTop)
 	}
-	if len(s.cfg.Competitors) != 1 || s.cfg.Competitors[0].ID != 999 {
-		t.Errorf("competitors wiped: %+v", s.cfg.Competitors)
+	if len(app.Competitors) != 1 || app.Competitors[0].ID != 999 {
+		t.Errorf("competitors wiped: %+v", app.Competitors)
 	}
-	if len(s.cfg.Relevance.GenreIDs) != 1 {
-		t.Errorf("relevance wiped: %+v", s.cfg.Relevance)
+	if len(app.Relevance.GenreIDs) != 1 {
+		t.Errorf("relevance wiped: %+v", app.Relevance)
 	}
 	reloaded, err := config.Load(s.cfgPath)
 	if err != nil {
 		t.Fatalf("reload saved config: %v", err)
 	}
-	if len(reloaded.Competitors) != 1 || reloaded.Competitors[0].ID != 999 {
-		t.Errorf("competitors not persisted to disk: %+v", reloaded.Competitors)
+	if len(reloaded.Apps[0].Competitors) != 1 || reloaded.Apps[0].Competitors[0].ID != 999 {
+		t.Errorf("competitors not persisted to disk: %+v", reloaded.Apps[0].Competitors)
 	}
 }
 

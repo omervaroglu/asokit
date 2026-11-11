@@ -310,6 +310,39 @@ func TestMigrationUpgradesExistingDatabase(t *testing.T) {
 	}
 }
 
+// TestAppMeta: upsert caches an app's name/icon, a second upsert refreshes it,
+// and a blank name is ignored so good metadata is never wiped.
+func TestAppMeta(t *testing.T) {
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	if _, ok, _ := st.AppMeta(42); ok {
+		t.Fatal("expected no metadata before any upsert")
+	}
+	must(t, st.UpsertAppMeta(42, "Calm", "https://cdn/icon1.png"))
+	m, ok, err := st.AppMeta(42)
+	if err != nil || !ok || m.Name != "Calm" || m.IconURL != "https://cdn/icon1.png" {
+		t.Fatalf("after upsert: %+v ok=%v err=%v", m, ok, err)
+	}
+
+	// Refresh replaces name + icon.
+	must(t, st.UpsertAppMeta(42, "Calm — Sleep", "https://cdn/icon2.png"))
+	m, _, _ = st.AppMeta(42)
+	if m.Name != "Calm — Sleep" || m.IconURL != "https://cdn/icon2.png" {
+		t.Errorf("refresh didn't apply: %+v", m)
+	}
+
+	// Blank name is a no-op (never wipes existing metadata).
+	must(t, st.UpsertAppMeta(42, "", ""))
+	m, _, _ = st.AppMeta(42)
+	if m.Name != "Calm — Sleep" {
+		t.Errorf("blank upsert wiped metadata: %+v", m)
+	}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

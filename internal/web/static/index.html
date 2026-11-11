@@ -61,6 +61,23 @@
 
   .note { color: var(--muted); font-size: 12.5px; margin: 6px 0 22px; max-width: 70ch; }
 
+  /* app switcher: icon + name chips, one per tracked app */
+  .apps { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 14px; }
+  .appchip {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    font: inherit; font-size: 13.5px; color: var(--text-2);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 5px 11px 5px 6px;
+  }
+  .appchip:hover { color: var(--text); }
+  .appchip[aria-selected="true"] { border-color: var(--baseline); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--series); }
+  .appchip img, .appchip .noicon {
+    width: 26px; height: 26px; border-radius: 6px; flex: none; object-fit: cover;
+    background: var(--plane); border: 1px solid var(--border);
+  }
+  .appchip .noicon { display: inline-flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); }
+  .appchip.add { color: var(--muted); font-weight: 600; padding: 5px 12px; }
+
   .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 16px; }
   .tab {
     font: inherit; font-size: 13px; padding: 6px 13px; border-radius: 999px;
@@ -203,6 +220,7 @@
 
     <!-- dashboard view -->
     <div id="dash" class="hidden">
+      <div id="apps" class="apps"></div>
       <div id="markets" class="tabs"></div>
       <p class="note">
         Position is the iTunes Search API's relevance ranking — a proxy for App

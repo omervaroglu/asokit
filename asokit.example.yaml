@@ -1,10 +1,5 @@
 # asokit configuration — copy to asokit.yaml and edit.
 #
-# app_id: the numeric App Store id of the app you want to track. It is the
-#   number in an App Store URL, e.g. apps.apple.com/app/calm/id571800810 -> 571800810
-#   The same app id is used across all markets.
-app_id: 571800810
-
 # search_limit: how many results to fetch per keyword (max 200). Optional.
 search_limit: 200
 
@@ -13,42 +8,61 @@ search_limit: 200
 #   search_limit). A competitor ranked below store_top can't be tracked.
 store_top: 50
 
-# relevance: what counts as "the same type" as your app, for the relevance
-#   metric (how many of the top 10 are competitors like you). Optional.
-#   - genre_ids: App Store category ids. If omitted, your app's own category is
-#     looked up automatically once per run.
-#   - title_terms: words whose presence in a result's title also makes it count.
-# relevance:
-#   genre_ids: ["6007"]        # 6007 = Education, 6015 = Finance, 6013 = Health…
-#   title_terms: ["budget", "expense"]
+# apps: one entry per application you track. Each app has its own markets,
+# keywords, competitors and relevance settings, and keeps its own history.
+apps:
+    # id: the numeric App Store id of the app. It is the number in an App Store
+    #   URL, e.g. apps.apple.com/app/calm/id571800810 -> 571800810
+  - id: 571800810
+    # name: optional display label for the dashboard. When omitted, asokit fills
+    #   it (and the app icon) from the App Store on the next run.
+    name: Calm
 
-# competitors: other apps to track alongside yours. Their rank per keyword is
-#   derived from the stored results (no extra API calls), so it's visible only
-#   down to store_top. Optional.
-# competitors:
-#   - { id: 123456789, name: "Rival A" }
-#   - { id: 987654321, name: "Rival B" }
+    # relevance: what counts as "the same type" as this app, for the relevance
+    #   metric (how many of the top 10 are competitors like you). Optional.
+    #   - genre_ids: App Store category ids. If omitted, the app's own category
+    #     is looked up automatically once per run.
+    #   - title_terms: words whose presence in a result's title also makes it
+    #     count as the same type.
+    relevance:
+      # genre_ids: ["6007"]        # 6007 = Education, 6015 = Finance, 6013 = Health…
+      title_terms: [sleep, meditation, calm, relax]
 
-# markets: one entry per storefront you want to track. Each market has its own
-# country code and its own keyword list (the same app is often marketed with
-# different keywords per country/language). Each market keeps its own history.
-#
-# phrases: an optional second group of terms per market, tracked exactly like
-#   keywords but shown as a separate section (e.g. multi-word search phrases).
-markets:
-  - country: us
-    keywords:
-      - meditation
-      - sleep
-      - calm
-    phrases:
-      - sleep sounds
-      - guided meditation
-  - country: de
-    keywords:
-      - meditation
-      - schlaf
-      - entspannung
+    # competitors: other apps to track alongside this one. Their rank per keyword
+    #   is derived from the stored results (no extra API calls), so it is visible
+    #   only down to store_top. Optional.
+    competitors:
+      - { id: 493145008, name: Headspace }
+      - { id: 337472899, name: Insight Timer }
 
-# (Old single-market configs — a top-level `country:` and `keywords:` — are
-# still read and automatically migrated into a single market.)
+    # markets: one entry per storefront. Each market has its own country code and
+    #   keyword list (the same app is often marketed with different keywords per
+    #   country/language) and keeps its own history.
+    #
+    # phrases: an optional second group of terms per market, tracked exactly like
+    #   keywords but shown as a separate section (e.g. multi-word search phrases).
+    markets:
+      - country: us
+        keywords:
+          - meditation
+          - sleep
+          - calm
+        phrases:
+          - sleep sounds
+          - guided meditation
+      - country: de
+        keywords:
+          - meditation
+          - schlaf
+          - entspannung
+
+  # A second app, with its own markets and competitors:
+  # - id: 493145008
+  #   name: Headspace
+  #   markets:
+  #     - country: us
+  #       keywords: [meditation, mindfulness, sleep]
+
+# (Old single-app configs — a top-level `app_id:` with `markets:`, or the even
+# older flat `country:` + `keywords:` — are still read and migrated into a
+# single app automatically.)

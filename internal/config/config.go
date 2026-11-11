@@ -66,26 +66,74 @@ type Competitor struct {
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 }
 
-// Config describes which app and markets to track.
+// App is one tracked application: a numeric App Store id plus everything scoped
+// to that app — its markets (storefronts, each with their own keywords), the
+// competitors tracked against it, and its relevance criteria. Different apps are
+// marketed with different keywords and have different rivals, so each keeps its
+// own set.
+type App struct {
+	// ID is the numeric App Store identifier, shared across this app's markets.
+	ID int64 `yaml:"id" json:"id"`
+	// Name is an optional display label; when empty it is filled from the App
+	// Store at run time and shown in the dashboard. Hand-set to override.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+	// Relevance configures the relevance metric for this app. Optional.
+	Relevance Relevance `yaml:"relevance,omitempty" json:"relevance"`
+	// Competitors are other apps tracked alongside this one. Optional.
+	Competitors []Competitor `yaml:"competitors,omitempty" json:"competitors,omitempty"`
+	// Markets is the list of storefronts to track for this app.
+	Markets []Market `yaml:"markets" json:"markets"`
+}
+
+// Market returns the market for the given country code within this app.
+func (a App) Market(country string) (Market, bool) {
+	country = NormalizeCountry(country)
+	for _, m := range a.Markets {
+		if m.Country == country {
+			return m, true
+		}
+	}
+	return Market{}, false
+}
+
+// Countries returns this app's storefront codes, in order.
+func (a App) Countries() []string {
+	out := make([]string, 0, len(a.Markets))
+	for _, m := range a.Markets {
+		out = append(out, m.Country)
+	}
+	return out
+}
+
+// Config describes which apps and markets to track.
 type Config struct {
-	// AppID is the numeric App Store identifier, shared across markets.
-	AppID int64 `yaml:"app_id" json:"app_id"`
 	// SearchLimit caps how many results to request per term (max 200).
 	SearchLimit int `yaml:"search_limit" json:"search_limit"`
 	// StoreTop is how many of the top results to persist per snapshot (for
 	// competition metrics and competitor tracking). Clamped to SearchLimit.
 	StoreTop int `yaml:"store_top" json:"store_top"`
-	// Relevance configures the relevance metric. Optional.
-	Relevance Relevance `yaml:"relevance,omitempty" json:"relevance"`
-	// Competitors are other apps to track alongside ours. Optional.
-	Competitors []Competitor `yaml:"competitors,omitempty" json:"competitors,omitempty"`
-	// Markets is the list of storefronts to track.
-	Markets []Market `yaml:"markets" json:"markets"`
+	// Apps is the list of applications to track, each with its own markets,
+	// competitors and relevance settings.
+	Apps []App `yaml:"apps" json:"apps"`
 
-	// Deprecated: legacy single-market fields, still accepted when loading an
-	// old config and folded into Markets by Normalize. Not emitted on Save.
-	Country  string   `yaml:"country,omitempty" json:"-"`
-	Keywords []string `yaml:"keywords,omitempty" json:"-"`
+	// Deprecated: legacy single-app fields, still accepted when loading an old
+	// config and folded into a single App by Normalize. Not emitted on Save.
+	AppID       int64        `yaml:"app_id,omitempty" json:"-"`
+	Relevance   Relevance    `yaml:"relevance,omitempty" json:"-"`
+	Competitors []Competitor `yaml:"competitors,omitempty" json:"-"`
+	Markets     []Market     `yaml:"markets,omitempty" json:"-"`
+	Country     string       `yaml:"country,omitempty" json:"-"`
+	Keywords    []string     `yaml:"keywords,omitempty" json:"-"`
+}
+
+// App returns the tracked app with the given id, if present.
+func (c *Config) App(id int64) (App, bool) {
+	for _, a := range c.Apps {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return App{}, false
 }
 
 // Load reads and validates a YAML config file from path.
@@ -124,8 +172,8 @@ func (c *Config) Save(path string) error {
 	return nil
 }
 
-// Normalize applies defaults, folds legacy single-market fields into Markets,
-// splits/dedups keywords, and dedups markets by country. Safe to call repeatedly.
+// Normalize applies defaults, folds legacy single-app fields into Apps,
+// splits/dedups keywords, and canonicalises markets. Safe to call repeatedly.
 func (c *Config) Normalize() {
 	if c.SearchLimit <= 0 {
 		c.SearchLimit = DefaultSearchLimit
@@ -142,25 +190,46 @@ func (c *Config) Normalize() {
 		c.StoreTop = c.SearchLimit
 	}
 
-	// Fold a legacy flat config (top-level country + keywords) into one market.
-	if len(c.Markets) == 0 && (c.Country != "" || len(c.Keywords) > 0) {
-		c.Markets = []Market{{Country: c.Country, Keywords: c.Keywords}}
+	// Fold a legacy single-app config into Apps: a top-level app_id with its
+	// markets (or the even older flat country+keywords) becomes one App.
+	if len(c.Apps) == 0 {
+		markets := c.Markets
+		if len(markets) == 0 && (c.Country != "" || len(c.Keywords) > 0) {
+			markets = []Market{{Country: c.Country, Keywords: c.Keywords}}
+		}
+		if c.AppID != 0 || len(markets) > 0 {
+			c.Apps = []App{{
+				ID:          c.AppID,
+				Relevance:   c.Relevance,
+				Competitors: c.Competitors,
+				Markets:     markets,
+			}}
+		}
 	}
+	// Clear the legacy fields so Save never re-emits them.
+	c.AppID = 0
+	c.Relevance = Relevance{}
+	c.Competitors = nil
+	c.Markets = nil
 	c.Country = ""
 	c.Keywords = nil
 
-	// Normalize each market (lowercase country, split/dedup keywords). Duplicate
-	// storefronts are left in place for Validate to report, rather than silently
+	// Normalize each app's markets (lowercase country, split/dedup keywords).
+	// Duplicates are left in place for Validate to report rather than silently
 	// dropped, so the user is told instead of losing keywords.
-	markets := make([]Market, 0, len(c.Markets))
-	for _, m := range c.Markets {
-		markets = append(markets, Market{
-			Country:  strings.ToLower(strings.TrimSpace(m.Country)),
-			Keywords: SplitKeywords(m.Keywords),
-			Phrases:  SplitKeywords(m.Phrases),
-		})
+	for i := range c.Apps {
+		a := &c.Apps[i]
+		a.Name = strings.TrimSpace(a.Name)
+		markets := make([]Market, 0, len(a.Markets))
+		for _, m := range a.Markets {
+			markets = append(markets, Market{
+				Country:  NormalizeCountry(m.Country),
+				Keywords: SplitKeywords(m.Keywords),
+				Phrases:  SplitKeywords(m.Phrases),
+			})
+		}
+		a.Markets = markets
 	}
-	c.Markets = markets
 }
 
 // NormalizeCountry lowercases and trims a storefront code, matching how
@@ -205,31 +274,42 @@ func SplitKeywords(in []string) []string {
 
 // Validate checks that the config is usable.
 func (c *Config) Validate() error {
-	if c.AppID <= 0 {
-		return fmt.Errorf("config: app_id must be a positive number")
+	if len(c.Apps) == 0 {
+		return fmt.Errorf("config: at least one app is required")
 	}
-	if len(c.Markets) == 0 {
-		return fmt.Errorf("config: at least one market is required")
-	}
-	seen := make(map[string]bool)
-	for _, m := range c.Markets {
-		if err := validateCountry(m.Country); err != nil {
-			return err
+	seenApp := make(map[int64]bool)
+	for _, a := range c.Apps {
+		if a.ID <= 0 {
+			return fmt.Errorf("config: app id must be a positive number")
 		}
-		if len(m.Keywords) == 0 && len(m.Phrases) == 0 {
-			return fmt.Errorf("config: market %q needs at least one keyword or phrase", m.Country)
+		if seenApp[a.ID] {
+			return fmt.Errorf("config: duplicate app %d", a.ID)
 		}
-		if seen[m.Country] {
-			return fmt.Errorf("config: duplicate market %q", m.Country)
+		seenApp[a.ID] = true
+
+		if len(a.Markets) == 0 {
+			return fmt.Errorf("config: app %d needs at least one market", a.ID)
 		}
-		seen[m.Country] = true
-	}
-	for _, comp := range c.Competitors {
-		if comp.ID <= 0 {
-			return fmt.Errorf("config: competitor %q must have a positive id", comp.Name)
+		seen := make(map[string]bool)
+		for _, m := range a.Markets {
+			if err := validateCountry(m.Country); err != nil {
+				return err
+			}
+			if len(m.Keywords) == 0 && len(m.Phrases) == 0 {
+				return fmt.Errorf("config: app %d market %q needs at least one keyword or phrase", a.ID, m.Country)
+			}
+			if seen[m.Country] {
+				return fmt.Errorf("config: app %d has duplicate market %q", a.ID, m.Country)
+			}
+			seen[m.Country] = true
 		}
-		if comp.ID == c.AppID {
-			return fmt.Errorf("config: competitor id %d is the tracked app itself", comp.ID)
+		for _, comp := range a.Competitors {
+			if comp.ID <= 0 {
+				return fmt.Errorf("config: competitor %q must have a positive id", comp.Name)
+			}
+			if comp.ID == a.ID {
+				return fmt.Errorf("config: competitor id %d is the tracked app itself", comp.ID)
+			}
 		}
 	}
 	return nil
@@ -271,23 +351,3 @@ var iso3166Alpha2 = func() map[string]bool {
 	}
 	return set
 }()
-
-// Market returns the market for the given country code, if present.
-func (c *Config) Market(country string) (Market, bool) {
-	country = strings.ToLower(strings.TrimSpace(country))
-	for _, m := range c.Markets {
-		if m.Country == country {
-			return m, true
-		}
-	}
-	return Market{}, false
-}
-
-// Countries returns the configured storefront codes, in order.
-func (c *Config) Countries() []string {
-	out := make([]string, 0, len(c.Markets))
-	for _, m := range c.Markets {
-		out = append(out, m.Country)
-	}
-	return out
-}

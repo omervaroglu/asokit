@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -75,11 +76,20 @@ type releaseMarker struct {
 	ReleasedAt string `json:"released_at"`
 }
 
+// appInfo is the minimal per-app descriptor the dashboard's app switcher needs.
+// IconURL is filled once app metadata is captured (populated in a later phase).
+type appInfo struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	IconURL string `json:"icon_url,omitempty"`
+}
+
 type dataResponse struct {
 	Initialized bool            `json:"initialized"`
-	AppID       int64           `json:"app_id"`
+	AppID       int64           `json:"app_id"`  // the app this response is for
+	Apps        []appInfo       `json:"apps"`    // all configured apps (for the switcher)
 	Country     string          `json:"country"` // the market this response is for
-	Markets     []string        `json:"markets"` // all configured storefronts
+	Markets     []string        `json:"markets"` // the app's configured storefronts
 	GeneratedAt string          `json:"generated_at"`
 	Keywords    []keywordData   `json:"keywords"`
 	Phrases     []keywordData   `json:"phrases"`
@@ -89,9 +99,10 @@ type dataResponse struct {
 type configResponse struct {
 	Initialized bool            `json:"initialized"`
 	Error       string          `json:"error,omitempty"`
-	AppID       int64           `json:"app_id"`
+	AppID       int64           `json:"app_id"` // the first/selected app (back-compat)
 	SearchLimit int             `json:"search_limit"`
-	Markets     []config.Market `json:"markets"`
+	Markets     []config.Market `json:"markets"` // the first/selected app's markets
+	Apps        []config.App    `json:"apps"`    // all configured apps
 }
 
 type configRequest struct {
@@ -140,12 +151,45 @@ func (s *Server) snapshot() (*config.Config, string) {
 	return s.cfg, s.cfgErr
 }
 
+// selectApp picks the app a request targets: the one named by ?app=<id>, or the
+// first configured app when the parameter is missing or unknown. cfg must be
+// initialized (Validate guarantees at least one app).
+func selectApp(cfg *config.Config, q string) config.App {
+	if q != "" {
+		if id, err := strconv.ParseInt(q, 10, 64); err == nil {
+			if a, ok := cfg.App(id); ok {
+				return a
+			}
+		}
+	}
+	return cfg.Apps[0]
+}
+
+// appInfos lists the configured apps for the dashboard's switcher, enriched with
+// each app's cached name and icon. A configured name overrides the cached one; a
+// missing cache entry just yields no icon (the UI falls back to the id).
+func (s *Server) appInfos(cfg *config.Config) []appInfo {
+	out := make([]appInfo, 0, len(cfg.Apps))
+	for _, a := range cfg.Apps {
+		info := appInfo{ID: a.ID, Name: a.Name}
+		if meta, ok, err := s.st.AppMeta(a.ID); err == nil && ok {
+			if info.Name == "" {
+				info.Name = meta.Name
+			}
+			info.IconURL = meta.IconURL
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	cfg, _ := s.snapshot()
 	resp := dataResponse{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Keywords:    []keywordData{},
 		Phrases:     []keywordData{},
+		Apps:        []appInfo{},
 		Markets:     []string{},
 		Releases:    []releaseMarker{},
 	}
@@ -154,16 +198,17 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	market, ok := cfg.Market(r.URL.Query().Get("country"))
+	app := selectApp(cfg, r.URL.Query().Get("app"))
+	market, ok := app.Market(r.URL.Query().Get("country"))
 	if !ok {
-		market = cfg.Markets[0] // default to the first storefront
+		market = app.Markets[0] // default to the first storefront
 	}
-	kws, phrases, err := s.buildMarket(cfg.AppID, market)
+	kws, phrases, err := s.buildMarket(app.ID, market)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	releases, err := s.st.Releases(cfg.AppID, market.Country)
+	releases, err := s.st.Releases(app.ID, market.Country)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -175,9 +220,10 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Initialized = true
-	resp.AppID = cfg.AppID
+	resp.AppID = app.ID
+	resp.Apps = s.appInfos(cfg)
 	resp.Country = market.Country
-	resp.Markets = cfg.Countries()
+	resp.Markets = app.Countries()
 	resp.Keywords = kws
 	resp.Phrases = phrases
 	writeJSON(w, http.StatusOK, resp)
@@ -187,11 +233,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg, cfgErr := s.snapshot()
-		resp := configResponse{SearchLimit: config.DefaultSearchLimit, Markets: []config.Market{}}
+		resp := configResponse{SearchLimit: config.DefaultSearchLimit, Markets: []config.Market{}, Apps: []config.App{}}
 		if cfg != nil {
+			first := cfg.Apps[0]
 			resp = configResponse{
-				Initialized: true, AppID: cfg.AppID,
-				SearchLimit: cfg.SearchLimit, Markets: cfg.Markets,
+				Initialized: true, AppID: first.ID,
+				SearchLimit: cfg.SearchLimit, Markets: first.Markets, Apps: cfg.Apps,
 			}
 		} else if cfgErr != "" {
 			resp.Error = cfgErr
@@ -204,30 +251,51 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: "invalid request body"})
 			return
 		}
-		// Merge onto the existing config so fields the setup form does not send
-		// (store_top, relevance, competitors) are preserved rather than wiped.
-		cfg := &config.Config{}
-		var prevPhrases map[string][]string
+		// The setup form edits one app's markets. Merge onto the existing config
+		// so other apps and the app's own unedited fields (competitors, relevance,
+		// name, per-market phrases) are preserved rather than wiped.
+		cfg := &config.Config{SearchLimit: req.SearchLimit}
+		var apps []config.App
 		if cur, _ := s.snapshot(); cur != nil {
-			clone := *cur
-			cfg = &clone
-			prevPhrases = make(map[string][]string, len(cur.Markets))
-			for _, m := range cur.Markets {
+			apps = append(apps, cur.Apps...)
+			cfg.StoreTop = cur.StoreTop
+			// The setup form doesn't send search_limit; keep the existing value
+			// instead of letting Normalize reset it to the default.
+			if req.SearchLimit <= 0 {
+				cfg.SearchLimit = cur.SearchLimit
+			}
+		}
+		// Target the app with this id; if none matches and there is exactly one
+		// app, update it (an id change); otherwise add it as a new app.
+		idx := -1
+		for i := range apps {
+			if apps[i].ID == req.AppID {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 && len(apps) == 1 {
+			idx = 0
+		}
+		markets := req.Markets
+		if idx >= 0 {
+			prevPhrases := make(map[string][]string, len(apps[idx].Markets))
+			for _, m := range apps[idx].Markets {
 				prevPhrases[m.Country] = m.Phrases
 			}
-		}
-		cfg.AppID = req.AppID
-		cfg.SearchLimit = req.SearchLimit
-		cfg.Markets = req.Markets
-		// Phrases aren't in the setup form; carry forward a market's existing
-		// phrases when the request omits them, so a Save never drops them.
-		for i, m := range cfg.Markets {
-			if len(m.Phrases) == 0 {
-				if p, ok := prevPhrases[config.NormalizeCountry(m.Country)]; ok {
-					cfg.Markets[i].Phrases = p
+			for i, m := range markets {
+				if len(m.Phrases) == 0 {
+					if p, ok := prevPhrases[config.NormalizeCountry(m.Country)]; ok {
+						markets[i].Phrases = p
+					}
 				}
 			}
+			apps[idx].ID = req.AppID
+			apps[idx].Markets = markets
+		} else {
+			apps = append(apps, config.App{ID: req.AppID, Markets: markets})
 		}
+		cfg.Apps = apps
 		cfg.Normalize()
 		if err := cfg.Validate(); err != nil {
 			writeJSON(w, http.StatusBadRequest, configResponse{Error: err.Error()})
@@ -241,9 +309,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		s.cfg = cfg
 		s.cfgErr = ""
 		s.mu.Unlock()
+		first := cfg.Apps[0]
 		writeJSON(w, http.StatusOK, configResponse{
-			Initialized: true, AppID: cfg.AppID,
-			SearchLimit: cfg.SearchLimit, Markets: cfg.Markets,
+			Initialized: true, AppID: first.ID,
+			SearchLimit: cfg.SearchLimit, Markets: first.Markets, Apps: cfg.Apps,
 		})
 
 	default:
@@ -264,10 +333,11 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Which markets to run: one (?country=xx) or all (omitted).
-	markets := cfg.Markets
+	app := selectApp(cfg, r.URL.Query().Get("app"))
+	// Which markets to run: one (?country=xx) or all of the app's (omitted).
+	markets := app.Markets
 	if c := r.URL.Query().Get("country"); c != "" {
-		m, ok := cfg.Market(c)
+		m, ok := app.Market(c)
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown market " + c})
 			return
@@ -278,14 +348,14 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
-	crit := track.ResolveRelevance(r.Context(), s.client, cfg.AppID, cfg.Markets[0].Country, cfg.Relevance)
+	crit := track.ResolveRelevance(r.Context(), s.client, app.ID, app.Markets[0].Country, app.Relevance)
 
 	total := track.Result{At: time.Now().UTC()}
 	for _, m := range markets {
 		// Version marker (non-fatal, mirrors the CLI run path).
-		_ = track.CaptureRelease(r.Context(), s.client, s.st, cfg.AppID, m.Country)
+		_ = track.CaptureRelease(r.Context(), s.client, s.st, app.ID, m.Country)
 		rc := track.RunConfig{
-			AppID:       cfg.AppID,
+			AppID:       app.ID,
 			Country:     m.Country,
 			Keywords:    m.Terms(), // keywords + phrases, tracked together
 			SearchLimit: cfg.SearchLimit,
@@ -363,12 +433,13 @@ func (s *Server) handleKeyword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	market, ok := cfg.Market(r.URL.Query().Get("country"))
+	app := selectApp(cfg, r.URL.Query().Get("app"))
+	market, ok := app.Market(r.URL.Query().Get("country"))
 	if !ok {
-		market = cfg.Markets[0]
+		market = app.Markets[0]
 	}
 
-	snap, found, err := s.st.LatestForKeyword(cfg.AppID, market.Country, keyword)
+	snap, found, err := s.st.LatestForKeyword(app.ID, market.Country, keyword)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -394,16 +465,16 @@ func (s *Server) handleKeyword(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	ids := make([]int64, 0, len(cfg.Competitors))
-	for _, c := range cfg.Competitors {
+	ids := make([]int64, 0, len(app.Competitors))
+	for _, c := range app.Competitors {
 		ids = append(ids, c.ID)
 	}
-	seriesByID, err := s.st.CompetitorSeries(cfg.AppID, market.Country, keyword, ids)
+	seriesByID, err := s.st.CompetitorSeries(app.ID, market.Country, keyword, ids)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	for _, c := range cfg.Competitors {
+	for _, c := range app.Competitors {
 		cs := competitorSeries{ID: c.ID, Name: c.Name, Series: []point{}}
 		for _, pp := range seriesByID[c.ID] {
 			cs.Series = append(cs.Series, point{
