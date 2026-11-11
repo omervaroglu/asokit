@@ -425,6 +425,7 @@ func cmdExport(args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
 	out := fs.String("out", "", "output file (default: stdout)")
+	appID := fs.Int64("app", 0, "only export this app id (default: all apps)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -438,6 +439,15 @@ func cmdExport(args []string) error {
 	snaps, err := db.All()
 	if err != nil {
 		return err
+	}
+	if *appID != 0 {
+		filtered := snaps[:0]
+		for _, s := range snaps {
+			if s.AppID == *appID {
+				filtered = append(filtered, s)
+			}
+		}
+		snaps = filtered
 	}
 
 	w := os.Stdout

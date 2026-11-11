@@ -259,6 +259,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if cur, _ := s.snapshot(); cur != nil {
 			apps = append(apps, cur.Apps...)
 			cfg.StoreTop = cur.StoreTop
+			// The setup form doesn't send search_limit; keep the existing value
+			// instead of letting Normalize reset it to the default.
+			if req.SearchLimit <= 0 {
+				cfg.SearchLimit = cur.SearchLimit
+			}
 		}
 		// Target the app with this id; if none matches and there is exactly one
 		// app, update it (an id change); otherwise add it as a new app.
