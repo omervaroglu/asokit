@@ -25,6 +25,13 @@ adheres to [Semantic Versioning](https://semver.org/).
   shows market tabs with an "Add market" action; `run` sweeps all markets and
   `report --country xx` selects one. Keyword lists accept comma/semicolon
   separated input and are de-duplicated.
+- Multiple apps: track several apps from one config and database. The config is
+  an `apps:` list, each app with its own markets, competitors and relevance
+  settings and its own history (old single-app configs — a top-level `app_id:`
+  with `markets:` — are migrated automatically). The dashboard shows an app
+  switcher with each app's icon and name (captured from the App Store on run);
+  `run` sweeps every app, and `report`/`export` take `--app <id>` to focus on
+  one.
 - Storefront validation: a market's country must be a real App Store storefront
   (ISO 3166-1 alpha-2). Language codes typed by mistake are rejected with a
   suggestion (e.g. `zh` → "use cn"), surfaced in the setup form instead of

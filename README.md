@@ -5,9 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **asokit** is a small command-line tool (two direct dependencies) that tracks
-where an app ranks in App Store search for a set of keywords, over time. It
-stores each measurement locally in SQLite so you can watch keywords move up and
-down.
+where your apps rank in App Store search for a set of keywords, across
+storefronts, over time. It stores each measurement locally in SQLite so you can
+watch keywords move up and down.
 
 It's built for App Store Optimization (ASO) work: pick the keywords you care
 about, run `asokit run` on a schedule, and see the trend — in the terminal or in
@@ -72,6 +72,15 @@ your app highlighted) and each competitor's rank over time.
 <img src="docs/dashboard-detail.png" alt="Expanded keyword detail — top 10 and competitor trends" width="420">
 
 > Screenshots use the demo app [Calm](https://apps.apple.com/app/id571800810) with neutral keywords.
+
+### Multiple apps & markets
+
+Track more than one app from a single config and database. Each app keeps its own
+markets (storefronts), keywords, competitors and relevance settings — and its own
+history. The dashboard shows an **app switcher** (each app's icon and name) above
+the market tabs; `run` sweeps every app, while `report --app <id>` and
+`export --app <id>` focus on one. Old single-app configs (a top-level `app_id`
+with `markets:`) are migrated automatically.
 
 ### Keywords vs. phrases
 
