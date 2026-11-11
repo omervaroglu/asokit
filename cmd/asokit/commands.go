@@ -45,52 +45,74 @@ func cmdRun(ctx context.Context, args []string) error {
 	defer func() { _ = db.Close() }()
 
 	client := itunes.New()
-	// Resolve the relevance criteria once (one Lookup at most), outside the
-	// per-market loop; the genre is effectively the same across storefronts.
-	crit := track.ResolveRelevance(ctx, client, cfg.AppID, cfg.Markets[0].Country, cfg.Relevance)
 
-	var totalStored, totalFailures int
+	var totalStored, totalFailures, totalMarkets int
 	var at time.Time
-	for _, m := range cfg.Markets {
-		fmt.Printf("[%s]\n", strings.ToUpper(m.Country))
-		// Version marker: record the app's current version for this storefront.
-		// Non-fatal — a failed lookup must not abort keyword tracking.
-		if err := track.CaptureRelease(ctx, client, db, cfg.AppID, m.Country); err != nil {
-			fmt.Fprintf(os.Stderr, "  (version lookup failed: %v)\n", err)
+	for _, app := range cfg.Apps {
+		fmt.Printf("=== app %d%s ===\n", app.ID, appNameSuffix(app))
+		// Resolve the relevance criteria once per app (one Lookup at most), outside
+		// the per-market loop; the genre is the same across an app's storefronts.
+		crit := track.ResolveRelevance(ctx, client, app.ID, app.Markets[0].Country, app.Relevance)
+		for _, m := range app.Markets {
+			fmt.Printf("[%s]\n", strings.ToUpper(m.Country))
+			// Version marker: record the app's current version for this storefront.
+			// Non-fatal — a failed lookup must not abort keyword tracking.
+			if err := track.CaptureRelease(ctx, client, db, app.ID, m.Country); err != nil {
+				fmt.Fprintf(os.Stderr, "  (version lookup failed: %v)\n", err)
+			}
+			rc := track.RunConfig{
+				AppID:       app.ID,
+				Country:     m.Country,
+				Keywords:    m.Terms(), // keywords + phrases, tracked together
+				SearchLimit: cfg.SearchLimit,
+				StoreTop:    cfg.StoreTop,
+				Weights:     metrics.DefaultWeights,
+				Relevance:   crit,
+				Client:      client,
+				Delay:       *delay,
+			}
+			res, err := track.RunOnce(ctx, db, rc,
+				func(keyword string, r rank.Result, rerr error) {
+					if rerr != nil {
+						fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, rerr)
+						return
+					}
+					fmt.Printf("  %-30s %s\n", keyword, positionLabel(r.Position, r.Found))
+				})
+			if err != nil {
+				return err
+			}
+			totalStored += res.Stored
+			totalFailures += res.Failures
+			totalMarkets++
+			at = res.At
 		}
-		rc := track.RunConfig{
-			AppID:       cfg.AppID,
-			Country:     m.Country,
-			Keywords:    m.Terms(), // keywords + phrases, tracked together
-			SearchLimit: cfg.SearchLimit,
-			StoreTop:    cfg.StoreTop,
-			Weights:     metrics.DefaultWeights,
-			Relevance:   crit,
-			Client:      client,
-			Delay:       *delay,
-		}
-		res, err := track.RunOnce(ctx, db, rc,
-			func(keyword string, r rank.Result, rerr error) {
-				if rerr != nil {
-					fmt.Fprintf(os.Stderr, "  %-30s error: %v\n", keyword, rerr)
-					return
-				}
-				fmt.Printf("  %-30s %s\n", keyword, positionLabel(r.Position, r.Found))
-			})
-		if err != nil {
-			return err
-		}
-		totalStored += res.Stored
-		totalFailures += res.Failures
-		at = res.At
 	}
 
-	fmt.Printf("\nStored %d keyword(s) across %d market(s) for app %d at %s\n",
-		totalStored, len(cfg.Markets), cfg.AppID, at.Format(time.RFC3339))
+	fmt.Printf("\nStored %d keyword(s) across %d market(s) and %d app(s) at %s\n",
+		totalStored, totalMarkets, len(cfg.Apps), at.Format(time.RFC3339))
 	if totalFailures > 0 {
 		return fmt.Errorf("%d keyword(s) failed", totalFailures)
 	}
 	return nil
+}
+
+// appNameSuffix renders " (Name)" when an app has a configured name, for the
+// run header; empty otherwise.
+func appNameSuffix(a config.App) string {
+	if a.Name != "" {
+		return " (" + a.Name + ")"
+	}
+	return ""
+}
+
+// appIDList is a comma-separated list of the configured app ids, for messages.
+func appIDList(cfg *config.Config) string {
+	ids := make([]string, 0, len(cfg.Apps))
+	for _, a := range cfg.Apps {
+		ids = append(ids, strconv.FormatInt(a.ID, 10))
+	}
+	return strings.Join(ids, ", ")
 }
 
 // cmdOnce performs a single ad-hoc lookup without touching the database.
@@ -125,6 +147,7 @@ func cmdReport(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	cfgPath := fs.String("config", "asokit.yaml", "path to config file")
 	dbPath := fs.String("db", "asokit.db", "path to SQLite database")
+	appID := fs.Int64("app", 0, "app id to report (default: first configured app)")
 	country := fs.String("country", "", "storefront to report (default: first configured market)")
 	trend := fs.Bool("trend", false, "show movement versus the previous snapshot")
 	competitors := fs.Bool("competitors", false, "add a column per configured competitor with its rank")
@@ -138,11 +161,20 @@ func cmdReport(args []string) error {
 		return err
 	}
 
-	market := cfg.Markets[0]
-	if *country != "" {
-		m, ok := cfg.Market(*country)
+	app := cfg.Apps[0]
+	if *appID != 0 {
+		a, ok := cfg.App(*appID)
 		if !ok {
-			return fmt.Errorf("market %q is not in the config (have: %s)", *country, strings.Join(cfg.Countries(), ", "))
+			return fmt.Errorf("app %d is not in the config (have: %s)", *appID, appIDList(cfg))
+		}
+		app = a
+	}
+
+	market := app.Markets[0]
+	if *country != "" {
+		m, ok := app.Market(*country)
+		if !ok {
+			return fmt.Errorf("market %q is not in app %d (have: %s)", *country, app.ID, strings.Join(app.Countries(), ", "))
 		}
 		market = m
 	}
@@ -154,10 +186,10 @@ func cmdReport(args []string) error {
 	defer func() { _ = db.Close() }()
 
 	if *compare != "" {
-		return reportCompare(db, cfg, market, *compare)
+		return reportCompare(db, app, market, *compare)
 	}
 
-	latest, err := db.Latest(cfg.AppID, market.Country)
+	latest, err := db.Latest(app.ID, market.Country)
 	if err != nil {
 		return err
 	}
@@ -175,13 +207,13 @@ func cmdReport(args []string) error {
 	var comps []config.Competitor
 	var compIDs []int64
 	if *competitors {
-		comps = cfg.Competitors
+		comps = app.Competitors
 		for _, c := range comps {
 			compIDs = append(compIDs, c.ID)
 		}
 	}
 
-	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
+	fmt.Printf("App %d%s — Market: %s\n", app.ID, appNameSuffix(app), strings.ToUpper(market.Country))
 
 	header := []string{"KEYWORD", "POSITION"}
 	if *trend {
@@ -218,7 +250,7 @@ func cmdReport(args []string) error {
 			}
 			row := []string{kw, positionLabel(s.Position, s.Found)}
 			if *trend {
-				prevPos, prevFound, perr := db.PreviousPosition(cfg.AppID, market.Country, kw)
+				prevPos, prevFound, perr := db.PreviousPosition(app.ID, market.Country, kw)
 				if perr != nil {
 					return perr
 				}
@@ -255,13 +287,13 @@ func cmdReport(args []string) error {
 // reportCompare shows, per keyword, how the latest run moved versus the run
 // nearest a chosen date: position movement, difficulty change, and a new/lost
 // flag when a keyword appears in only one of the two runs.
-func reportCompare(db *store.Store, cfg *config.Config, market config.Market, dateStr string) error {
+func reportCompare(db *store.Store, app config.App, market config.Market, dateStr string) error {
 	target, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
 		return fmt.Errorf("--compare: invalid date %q, want YYYY-MM-DD", dateStr)
 	}
 
-	history, err := db.History(cfg.AppID, market.Country)
+	history, err := db.History(app.ID, market.Country)
 	if err != nil {
 		return err
 	}
@@ -299,7 +331,7 @@ func reportCompare(db *store.Store, cfg *config.Config, market config.Market, da
 		}
 	}
 
-	fmt.Printf("Market: %s  (app %d)\n", strings.ToUpper(market.Country), cfg.AppID)
+	fmt.Printf("App %d%s — Market: %s\n", app.ID, appNameSuffix(app), strings.ToUpper(market.Country))
 	fmt.Printf("Comparing %s → %s\n",
 		tsSet[baseTS].Format("2006-01-02 15:04"), tsSet[latestTS].Format("2006-01-02 15:04"))
 	if baseTS == latestTS {
@@ -490,7 +522,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	where := "not set up yet — open it to configure"
 	if cfg != nil {
-		where = fmt.Sprintf("app %d, markets: %s", cfg.AppID, strings.Join(cfg.Countries(), ", "))
+		where = fmt.Sprintf("%d app(s): %s", len(cfg.Apps), appIDList(cfg))
 	}
 	errc := make(chan error, 1)
 	go func() {
