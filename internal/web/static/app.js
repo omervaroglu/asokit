@@ -252,9 +252,54 @@ function render() {
   if (!DATA) return;
   metaEl.textContent =
     `app ${DATA.app_id} · ${(DATA.country || "").toUpperCase()} · ${DATA.keywords.length} keyword(s)`;
+  renderOverview();
   renderCharts();
   renderTable();
   setView(VIEW);
+}
+
+// ---------- metric helpers (tiering shared by cards + table) ----------------
+function diffTier(v) { return v <= 33 ? "easy" : v <= 66 ? "med" : "hard"; }
+function rankTier(cur) {
+  if (!cur || !cur.found) return "none";
+  if (cur.position <= 10) return "top10";
+  if (cur.position <= 50) return "top50";
+  return "low";
+}
+function median(xs) {
+  if (!xs.length) return 0;
+  const s = xs.slice().sort((a, b) => a - b), n = s.length;
+  return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+
+// renderOverview: a compact per-market summary strip (tracked / ranked / top
+// bands / median difficulty / best climber), shown above both views.
+function renderOverview() {
+  const el = document.getElementById("overview");
+  if (!el) return;
+  const all = DATA.keywords.concat(phrasesOf());
+  if (!all.some((k) => k.series.length > 0)) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+
+  const found = all.filter((k) => k.current && k.current.found);
+  const top10 = found.filter((k) => k.current.position <= 10).length;
+  const top50 = found.filter((k) => k.current.position <= 50).length;
+  const diffs = all.filter((k) => k.difficulty != null).map((k) => k.difficulty);
+  const medDiff = diffs.length ? Math.round(median(diffs)) : null;
+  let best = null;
+  for (const k of all) {
+    const d = delta(k.current, k.previous);
+    if (d.cls === "up") {
+      const n = k.previous.position - k.current.position;
+      if (!best || n > best.n) best = { kw: k.keyword, n };
+    }
+  }
+  const tile = (n, l) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  let html = tile(all.length, "Tracked") + tile(found.length, "Ranked") +
+    tile(top10, "Top 10") + tile(top50, "Top 50");
+  if (medDiff != null) html += tile(medDiff, "Median diff");
+  if (best) html += `<div class="stat"><div class="n">▲${best.n} <small>${escapeHTML(best.kw)}</small></div><div class="l">Best climber</div></div>`;
+  el.innerHTML = html;
+  el.classList.remove("hidden");
 }
 
 function delta(cur, prev) {
@@ -303,6 +348,7 @@ function renderCardGroup(title, items) {
   for (const kw of items) {
     const card = document.createElement("div");
     card.className = "card clickable";
+    card.dataset.rank = rankTier(kw.current);
     card.innerHTML = cardInnerHTML(kw);
     chartsEl.appendChild(card);
     wireHover(card.querySelector("svg.chart"));
@@ -328,10 +374,22 @@ function cardInnerHTML(kw) {
 
 function metricsLineHTML(kw) {
   const parts = [];
-  if (kw.difficulty != null) parts.push(`<span>Diff <b>${Math.round(kw.difficulty)}</b></span>`);
-  if (kw.relevance != null) parts.push(`<span>Rel <b>${Math.round(kw.relevance)}</b></span>`);
-  if (kw.result_count) parts.push(`<span>Results <b>${resultsText(kw.result_count)}</b></span>`);
+  if (kw.difficulty != null) {
+    const t = diffTier(kw.difficulty), n = Math.round(kw.difficulty);
+    const w = Math.max(5, Math.min(100, n));
+    parts.push(`<span class="metric diff" data-tier="${t}"><span class="mlabel">Diff</span>` +
+      `<span class="mval">${n}</span><span class="meter"><span class="fill" style="width:${w}%"></span></span></span>`);
+  }
+  if (kw.relevance != null) parts.push(`<span class="metric"><span class="mlabel">Rel</span>${relDotsHTML(kw.relevance)}</span>`);
+  if (kw.result_count) parts.push(`<span class="metric"><span class="mlabel">Results</span> <b>${resultsText(kw.result_count)}</b></span>`);
+  if (kw.narrow === true) parts.push(`<span class="niche" title="Fewer than 200 results — a low-competition niche term">niche</span>`);
   return parts.length ? `<div class="metrics">${parts.join("")}</div>` : "";
+}
+function relDotsHTML(v) {
+  const n = Math.max(0, Math.min(10, Math.round(v)));
+  let dots = "";
+  for (let i = 0; i < 10; i++) dots += `<i class="${i < n ? "on" : ""}"></i>`;
+  return `<span class="reldots" title="Relevance ${n}/10">${dots}</span>`;
 }
 function resultsText(count) { return count >= 200 ? "200+" : String(count); }
 
@@ -558,9 +616,12 @@ function rowHTML(kw) {
   const d = delta(kw.current, kw.previous);
   const pos = kw.current && kw.current.found ? "#" + kw.current.position : "—";
   const asof = kw.current ? fmtDateTime(kw.current.ts) : "—";
-  const diff = kw.difficulty == null ? "—" : Math.round(kw.difficulty);
+  const diff = kw.difficulty == null ? "—"
+    : `<span class="dv ${diffTier(kw.difficulty)}">${Math.round(kw.difficulty)}</span>`;
   const rel = kw.relevance == null ? "—" : Math.round(kw.relevance);
-  const results = kw.result_count ? resultsText(kw.result_count) : "—";
+  const results = kw.result_count
+    ? resultsText(kw.result_count) + (kw.narrow === true ? ` <span class="niche">niche</span>` : "")
+    : "—";
   return `<tr><td>${escapeHTML(kw.keyword)}</td><td class="num">${pos}</td>` +
     `<td class="num">${d.label || "—"}</td><td class="num">${diff}</td>` +
     `<td class="num">${rel}</td><td class="num">${results}</td>` +
