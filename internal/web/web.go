@@ -165,11 +165,20 @@ func selectApp(cfg *config.Config, q string) config.App {
 	return cfg.Apps[0]
 }
 
-// appInfos lists the configured apps for the dashboard's switcher.
-func appInfos(cfg *config.Config) []appInfo {
+// appInfos lists the configured apps for the dashboard's switcher, enriched with
+// each app's cached name and icon. A configured name overrides the cached one; a
+// missing cache entry just yields no icon (the UI falls back to the id).
+func (s *Server) appInfos(cfg *config.Config) []appInfo {
 	out := make([]appInfo, 0, len(cfg.Apps))
 	for _, a := range cfg.Apps {
-		out = append(out, appInfo{ID: a.ID, Name: a.Name})
+		info := appInfo{ID: a.ID, Name: a.Name}
+		if meta, ok, err := s.st.AppMeta(a.ID); err == nil && ok {
+			if info.Name == "" {
+				info.Name = meta.Name
+			}
+			info.IconURL = meta.IconURL
+		}
+		out = append(out, info)
 	}
 	return out
 }
@@ -212,7 +221,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 
 	resp.Initialized = true
 	resp.AppID = app.ID
-	resp.Apps = appInfos(cfg)
+	resp.Apps = s.appInfos(cfg)
 	resp.Country = market.Country
 	resp.Markets = app.Countries()
 	resp.Keywords = kws

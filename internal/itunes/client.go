@@ -54,6 +54,9 @@ type App struct {
 	SellerName string `json:"sellerName"`
 	// Version is the current version string, e.g. "1.1.8" (populated by Lookup).
 	Version string `json:"version"`
+	// ArtworkURL is the app icon URL (512px variant from the API). Used to show
+	// the app's icon in the dashboard; the URL points at Apple's public CDN.
+	ArtworkURL string `json:"artworkUrl512"`
 }
 
 type searchResponse struct {
