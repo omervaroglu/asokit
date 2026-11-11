@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/omervaroglu/asokit/internal/config"
+	"github.com/omervaroglu/asokit/internal/itunes"
 	"github.com/omervaroglu/asokit/internal/store"
 )
 
@@ -269,6 +271,32 @@ func TestServesIndex(t *testing.T) {
 	rr := do(h, http.MethodGet, "/", nil)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "asokit") {
 		t.Errorf("index not served: status=%d", rr.Code)
+	}
+}
+
+// EnsureAppMeta fills an app's cached name + icon from one lookup, and that icon
+// then rides along in /api/data's apps list for the switcher.
+func TestEnsureAppMeta(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"resultCount":1,"results":[{"trackId":1,"trackName":"Calm","artworkUrl512":"https://cdn/calm.png"}]}`))
+	}))
+	defer srv.Close()
+	old := itunes.LookupURL
+	itunes.LookupURL = srv.URL
+	defer func() { itunes.LookupURL = old }()
+
+	s, h := newServer(t, cfgTR())
+	s.EnsureAppMeta(context.Background())
+
+	meta, ok, err := s.st.AppMeta(1)
+	if err != nil || !ok || meta.Name != "Calm" || meta.IconURL != "https://cdn/calm.png" {
+		t.Fatalf("app meta = %+v ok=%v err=%v", meta, ok, err)
+	}
+
+	var p dataResponse
+	decode(t, do(h, http.MethodGet, "/api/data", nil), &p)
+	if len(p.Apps) != 1 || p.Apps[0].IconURL != "https://cdn/calm.png" || p.Apps[0].Name != "Calm" {
+		t.Errorf("switcher apps missing icon/name: %+v", p.Apps)
 	}
 }
 

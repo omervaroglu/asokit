@@ -5,6 +5,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -165,6 +166,30 @@ func selectApp(cfg *config.Config, q string) config.App {
 	return cfg.Apps[0]
 }
 
+// EnsureAppMeta fills in the cached name + icon for any configured app that
+// doesn't have them yet, via one lightweight App Store lookup each. It is
+// best-effort and meant to run in the background at startup (and after a config
+// change), so the switcher shows icons within seconds rather than only after a
+// full run. A lookup failure is ignored; the next run will try again.
+func (s *Server) EnsureAppMeta(ctx context.Context) {
+	cfg, _ := s.snapshot()
+	if cfg == nil {
+		return
+	}
+	for _, a := range cfg.Apps {
+		if _, ok, err := s.st.AppMeta(a.ID); err == nil && ok {
+			continue // already cached
+		}
+		country := config.DefaultCountry
+		if len(a.Markets) > 0 {
+			country = a.Markets[0].Country
+		}
+		if app, err := s.client.Lookup(ctx, a.ID, country); err == nil {
+			_ = s.st.UpsertAppMeta(a.ID, app.Name, app.ArtworkURL)
+		}
+	}
+}
+
 // appInfos lists the configured apps for the dashboard's switcher, enriched with
 // each app's cached name and icon. A configured name overrides the cached one; a
 // missing cache entry just yields no icon (the UI falls back to the id).
@@ -309,6 +334,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		s.cfg = cfg
 		s.cfgErr = ""
 		s.mu.Unlock()
+		// Fetch the icon/name for any newly added app, in the background.
+		go s.EnsureAppMeta(context.Background())
 		first := cfg.Apps[0]
 		writeJSON(w, http.StatusOK, configResponse{
 			Initialized: true, AppID: first.ID,

@@ -520,10 +520,14 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	handler, err := web.NewServer(db, cfg, cfgErr, *cfgPath).Handler()
+	srv2 := web.NewServer(db, cfg, cfgErr, *cfgPath)
+	handler, err := srv2.Handler()
 	if err != nil {
 		return err
 	}
+	// Populate each app's name + icon in the background so the dashboard shows
+	// them within seconds of launch, without waiting for a full run.
+	go srv2.EnsureAppMeta(ctx)
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           handler,
