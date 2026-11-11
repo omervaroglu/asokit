@@ -66,6 +66,13 @@ the stored results, no extra requests). See [`asokit.example.yaml`](asokit.examp
 for all fields. Title matching is Unicode-safe (Turkish dotted/dotless i, German
 umlaut/ß, CJK).
 
+Click any keyword on the dashboard to expand its detail: the current top 10 (with
+your app highlighted) and each competitor's rank over time.
+
+<img src="docs/dashboard-detail.png" alt="Expanded keyword detail — top 10 and competitor trends" width="420">
+
+> Screenshots use the demo app [Calm](https://apps.apple.com/app/id571800810) with neutral keywords.
+
 ### Keywords vs. phrases
 
 Each market can split its terms into two groups: **keywords** (single words like
