@@ -62,10 +62,20 @@ official Apple data.
   genuinely your category.
 
 You can also list **competitors** and see their rank per keyword (derived from
-the stored results, no extra requests), and group terms into **keywords** and
-**phrases** sections. See [`asokit.example.yaml`](asokit.example.yaml) for all
-fields. Title matching is Unicode-safe (Turkish dotted/dotless i, German
+the stored results, no extra requests). See [`asokit.example.yaml`](asokit.example.yaml)
+for all fields. Title matching is Unicode-safe (Turkish dotted/dotless i, German
 umlaut/ß, CJK).
+
+### Keywords vs. phrases
+
+Each market can split its terms into two groups: **keywords** (single words like
+`calm`) and **phrases** (multi-word searches like `sleep sounds`). They are
+**searched identically** — both go to the same API call and get the same metrics;
+the split only changes how they are grouped in the report and dashboard. The point
+is readability and ASO strategy: single keywords are broad and contested, while
+phrases are longer-tail — fewer rivals, clearer intent — so keeping them apart lets
+you see at a glance where you fight for position and where you win easily. Moving a
+term between the two groups never affects its metrics.
 
 ```
 $ asokit report --competitors
