@@ -212,6 +212,15 @@ func retryable(err error) bool {
 	if errors.As(err, &ne) && ne.Timeout() {
 		return true
 	}
+	// A failed network operation (dial/read/write) surfaces as *net.OpError:
+	// "connection reset by peer", "no route to host", "connection refused" and
+	// the like. These are transient connectivity blips, not permanent, and a GET
+	// is idempotent, so retry them the same way as a timeout. (Before this, such
+	// resets were the one keyword that intermittently failed a full run.)
+	var oe *net.OpError
+	if errors.As(err, &oe) {
+		return true
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}

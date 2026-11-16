@@ -2,10 +2,14 @@ package track
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -164,6 +168,32 @@ func TestCaptureRelease(t *testing.T) {
 	meta, ok, err := st.AppMeta(42)
 	if err != nil || !ok || meta.Name != "Calm" || meta.IconURL != "https://cdn/calm.png" {
 		t.Fatalf("app meta = %+v ok=%v err=%v, want Calm + icon", meta, ok, err)
+	}
+}
+
+// TestRetryableConnectionErrors: connection-level network faults (reset, no
+// route, refused) are transient and must be retried, including when wrapped by
+// http.Client as a *url.Error. A plain context cancellation is not retryable.
+func TestRetryableConnectionErrors(t *testing.T) {
+	reset := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"connection reset", reset, true},
+		{"no route to host", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.EHOSTUNREACH}, true},
+		{"connection refused", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, true},
+		{"wrapped by url.Error", &url.Error{Op: "Get", URL: "https://itunes", Err: reset}, true},
+		{"double-wrapped reading body", fmt.Errorf("itunes search: reading body: %w", reset), true},
+		{"context canceled is not retryable", context.Canceled, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := retryable(c.err); got != c.want {
+				t.Errorf("retryable(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
 	}
 }
 
