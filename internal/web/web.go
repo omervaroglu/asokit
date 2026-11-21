@@ -19,6 +19,7 @@ import (
 	"github.com/omervaroglu/asokit/internal/itunes"
 	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/store"
+	"github.com/omervaroglu/asokit/internal/summary"
 	"github.com/omervaroglu/asokit/internal/track"
 )
 
@@ -143,6 +144,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("/api/keyword", s.handleKeyword)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/run", s.handleRun)
+	mux.HandleFunc("/api/summary", s.handleSummary)
 	return mux, nil
 }
 
@@ -511,6 +513,56 @@ func (s *Server) handleKeyword(w http.ResponseWriter, r *http.Request) {
 		resp.Competitors = append(resp.Competitors, cs)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// summaryResponse is the cross-market run summary plus the versions the
+// dashboard can offer as comparison points.
+type summaryResponse struct {
+	summary.Report
+	AppID    int64    `json:"app_id"`
+	Versions []string `json:"versions"` // newest first
+}
+
+// handleSummary serves the cross-market run summary for one app. Query:
+// app, since=YYYY-MM-DD or release=<version> (default: previous run), and
+// format=md to download it as Markdown instead of JSON.
+func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.snapshot()
+	if cfg == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "not set up yet"})
+		return
+	}
+	q := r.URL.Query()
+	app := selectApp(cfg, q.Get("app"))
+	base, err := summary.ParseBase(q.Get("since"), q.Get("release"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	markets, err := summary.Load(s.st, app)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	report := summary.Build(markets, base, summary.Options{})
+
+	if q.Get("format") == "md" {
+		name := app.Name
+		if name == "" {
+			if meta, ok, err := s.st.AppMeta(app.ID); err == nil && ok {
+				name = meta.Name
+			}
+		}
+		title := fmt.Sprintf("Run summary — app %d", app.ID)
+		if name != "" {
+			title += " (" + name + ")"
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="asokit-summary-%d.md"`, app.ID))
+		_ = summary.Write(w, report, title, summary.FormatMarkdown)
+		return
+	}
+	writeJSON(w, http.StatusOK, summaryResponse{Report: report, AppID: app.ID, Versions: summary.Versions(markets)})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

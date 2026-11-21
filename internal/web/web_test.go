@@ -313,3 +313,51 @@ func must(t *testing.T, err error) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestSummary(t *testing.T) {
+	s, h := newServer(t, cfgTR())
+	t0 := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	t1 := t0.Add(24 * time.Hour)
+	for _, snap := range []store.Snapshot{
+		{Timestamp: t0, AppID: 1, Country: "tr", Keyword: "sleep", Position: 60, Found: true, ResultCount: 200},
+		{Timestamp: t1, AppID: 1, Country: "tr", Keyword: "sleep", Position: 12, Found: true, ResultCount: 200},
+		{Timestamp: t0, AppID: 1, Country: "tr", Keyword: "calm", ResultCount: 200},
+		{Timestamp: t1, AppID: 1, Country: "tr", Keyword: "calm", Position: 3, Found: true, ResultCount: 200},
+	} {
+		must(t, s.st.Insert(snap))
+	}
+	must(t, s.st.UpsertRelease(1, "tr", "2.0", t0.Add(time.Hour)))
+
+	var p summaryResponse
+	decode(t, do(h, http.MethodGet, "/api/summary", nil), &p)
+	if p.AppID != 1 || p.Base.Kind != "previous" || len(p.Markets) != 1 {
+		t.Fatalf("response = %+v", p)
+	}
+	if len(p.Gained) != 1 || p.Gained[0].Delta != 48 || len(p.Entered) != 1 || p.Entered[0].Keyword != "calm" {
+		t.Errorf("gained = %+v, entered = %+v", p.Gained, p.Entered)
+	}
+	if len(p.Versions) != 1 || p.Versions[0] != "2.0" {
+		t.Errorf("versions = %v, want [2.0]", p.Versions)
+	}
+
+	decode(t, do(h, http.MethodGet, "/api/summary?release=2.0", nil), &p)
+	if p.Base.Kind != "release" || !p.Markets[0].HasBase {
+		t.Errorf("release base: %+v", p.Markets)
+	}
+
+	if rr := do(h, http.MethodGet, "/api/summary?since=nope", nil); rr.Code != http.StatusBadRequest {
+		t.Errorf("bad date: status %d, want 400", rr.Code)
+	}
+
+	rr := do(h, http.MethodGet, "/api/summary?format=md", nil)
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") || !strings.Contains(rr.Body.String(), "| TR | sleep | #60 | #12 | ▲ 48 |") {
+		t.Errorf("markdown: %s\n%s", ct, rr.Body.String())
+	}
+}
+
+func TestSummaryNotInitialized(t *testing.T) {
+	_, h := newServer(t, nil)
+	if rr := do(h, http.MethodGet, "/api/summary", nil); rr.Code != http.StatusConflict {
+		t.Errorf("status %d, want 409", rr.Code)
+	}
+}

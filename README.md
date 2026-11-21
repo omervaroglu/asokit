@@ -233,6 +233,14 @@ relevance / results metrics; click a card for its top-10 and competitor
 sparklines. App version dates are drawn as dashed markers on the charts. A
 sortable Table view and light/dark themes are built in.
 
+**Report** shows the same cross-market summary as `asokit report --summary`:
+what entered, gained, dropped or fell out across every market, the markets to
+check, opportunities and keywords to consider removing. Pick the comparison
+point (previous run, before a release, or nearest a date), click a row to jump
+to that keyword's chart, or **Download .md** to share it. The data is also
+available as JSON at `/api/summary?app=<id>[&release=<v>|&since=YYYY-MM-DD]`
+(add `&format=md` for Markdown).
+
 > The server binds to loopback (`127.0.0.1`) by default and writes files /
 > makes outbound requests on your behalf — expose it beyond localhost only if
 > you understand that.

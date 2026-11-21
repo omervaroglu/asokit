@@ -17,20 +17,20 @@ import (
 // Options holds the thresholds. Zero values are replaced by DefaultOptions.
 type Options struct {
 	// Noise: position changes of at most this many places are ignored.
-	Noise int
+	Noise int `json:"noise"`
 	// Opportunity: a ranked keyword in [OppMinRank, OppMaxRank] with difficulty
 	// at most OppMaxDifficulty and relevance at least OppMinRelevance.
-	OppMinRank       int
-	OppMaxRank       int
-	OppMaxDifficulty float64
-	OppMinRelevance  float64
+	OppMinRank       int     `json:"opp_min_rank"`
+	OppMaxRank       int     `json:"opp_max_rank"`
+	OppMaxDifficulty float64 `json:"opp_max_difficulty"`
+	OppMinRelevance  float64 `json:"opp_min_relevance"`
 	// DeadRuns: a keyword missing from the top results in each of its last
 	// DeadRuns measurements is suggested for removal.
-	DeadRuns int
+	DeadRuns int `json:"dead_runs"`
 	// A market is flagged when at least AlertCount keywords dropped by more than
 	// AlertDrop places (or fell out of the top results).
-	AlertDrop  int
-	AlertCount int
+	AlertDrop  int `json:"alert_drop"`
+	AlertCount int `json:"alert_count"`
 }
 
 // DefaultOptions are the thresholds used when an Options field is zero.
@@ -89,9 +89,9 @@ const (
 
 // Base is the comparison point.
 type Base struct {
-	Kind    BaseKind
-	Date    time.Time // for BaseDate
-	Version string    // for BaseRelease
+	Kind    BaseKind  `json:"kind"`
+	Date    time.Time `json:"date,omitzero"`     // for BaseDate
+	Version string    `json:"version,omitempty"` // for BaseRelease
 }
 
 // Market is one storefront's input.
@@ -143,8 +143,8 @@ type MarketInfo struct {
 
 // Report is the full summary.
 type Report struct {
-	Base          Base         `json:"-"`
-	Options       Options      `json:"-"`
+	Base          Base         `json:"base"`
+	Options       Options      `json:"options"`
 	Markets       []MarketInfo `json:"markets"`
 	Entered       []Move       `json:"entered"`
 	Gained        []Move       `json:"gained"`
@@ -159,6 +159,9 @@ type Report struct {
 // suggestion rules. Only configured terms are reported.
 func Build(markets []Market, base Base, opts Options) Report {
 	opts = opts.withDefaults()
+	if base.Kind == "" {
+		base.Kind = BasePrevious
+	}
 	r := Report{
 		Base: base, Options: opts,
 		Entered: []Move{}, Gained: []Move{}, Dropped: []Move{}, Lost: []Move{},

@@ -299,25 +299,16 @@ func cmdReport(args []string) error {
 // reportSummary prints the cross-market run summary for one app: movement
 // versus a base run in every market, plus rule-based suggestions.
 func reportSummary(db *store.Store, app config.App, since, sinceRelease string, noise int, format string) error {
-	base := summary.Base{Kind: summary.BasePrevious}
-	switch {
-	case since != "" && sinceRelease != "":
-		return errors.New("use either --since or --since-release, not both")
-	case since != "":
-		t, err := time.Parse("2006-01-02", since)
-		if err != nil {
-			return fmt.Errorf("--since: invalid date %q, want YYYY-MM-DD", since)
-		}
-		base = summary.Base{Kind: summary.BaseDate, Date: t}
-	case sinceRelease != "":
-		base = summary.Base{Kind: summary.BaseRelease, Version: sinceRelease}
+	base, err := summary.ParseBase(since, sinceRelease)
+	if err != nil {
+		return fmt.Errorf("--since/--since-release: %w", err)
 	}
 	f := summary.Format(format)
 	if f != summary.FormatText && f != summary.FormatMarkdown {
 		return fmt.Errorf("--format: want text or md, got %q", format)
 	}
 
-	markets, err := summaryInput(db, app)
+	markets, err := summary.Load(db, app)
 	if err != nil {
 		return err
 	}
@@ -328,23 +319,6 @@ func reportSummary(db *store.Store, app config.App, since, sinceRelease string, 
 	}
 	title := fmt.Sprintf("Run summary — app %d%s", app.ID, appNameSuffix(app))
 	return summary.Write(os.Stdout, r, title, f)
-}
-
-// summaryInput loads every market's history and releases for an app.
-func summaryInput(db *store.Store, app config.App) ([]summary.Market, error) {
-	out := make([]summary.Market, 0, len(app.Markets))
-	for _, m := range app.Markets {
-		history, err := db.History(app.ID, m.Country)
-		if err != nil {
-			return nil, err
-		}
-		releases, err := db.Releases(app.ID, m.Country)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, summary.Market{Country: m.Country, Terms: m.Terms(), History: history, Releases: releases})
-	}
-	return out, nil
 }
 
 // reportCompare shows, per keyword, how the latest run moved versus the run

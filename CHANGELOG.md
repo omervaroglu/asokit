@@ -16,8 +16,11 @@ adheres to [Semantic Versioning](https://semver.org/).
   were not measured, versus the previous run, a date (`--since`) or the last run
   before a release (`--since-release`). Adds rule-based suggestions
   (opportunities, markets to check, keywords to consider removing) and prints as
-  text or Markdown (`--format md`). Logic lives in `internal/summary`, ready for
-  the dashboard to reuse.
+  text or Markdown (`--format md`). Logic lives in `internal/summary`.
+- Dashboard **Report** view and `/api/summary` endpoint for the same summary:
+  comparison picker (previous run / before a release / nearest a date), check
+  alerts, clickable rows that jump to the keyword's chart, and a Markdown
+  download.
 - `export` — export all snapshots as CSV.
 - `serve` — embedded single-page web dashboard (small-multiple rank-over-time
   charts, trend badges, table view, light/dark themes); no external assets.

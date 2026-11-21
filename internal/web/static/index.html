@@ -201,6 +201,39 @@
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+  /* report view: cross-market run summary */
+  .rep-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 2px 0 16px; }
+  .rep-bar label { font-size: 13px; color: var(--text-2); display: inline-flex; gap: 8px; align-items: center; }
+  .rep-bar select, .rep-bar input {
+    font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px;
+  }
+  .rep-bar a.ctl {
+    text-decoration: none; display: inline-block; font-size: 13px; color: var(--text-2);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 11px;
+  }
+  .rep-bar a.ctl:hover { color: var(--text); }
+  .rep-bar .spacer { flex: 1; }
+  .rep-sub { color: var(--muted); font-size: 12.5px; margin: -8px 0 16px; }
+  .stat.good .n { color: var(--good); }
+  .stat.bad .n { color: var(--bad); }
+  .rep-sec { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 6px; margin-bottom: 16px; overflow-x: auto; }
+  .rep-sec h3 { margin: 0 0 2px; font-size: 15px; }
+  .rep-sec .why { color: var(--muted); font-size: 12.5px; margin: 0 0 6px; }
+  .rep-sec.alert { border-color: var(--warn); box-shadow: inset 3px 0 0 var(--warn); }
+  .rep-sec table.view { font-size: 13.5px; }
+  .rep-sec table.view td, .rep-sec table.view th { padding: 7px 10px; }
+  .rep-sec tr.go { cursor: pointer; }
+  .rep-sec tr.go:hover td { background: var(--plane); }
+  .mk { font-size: 11px; font-weight: 650; letter-spacing: .04em; color: var(--text-2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
+  .rep-sec details { padding: 4px 0 10px; }
+  .rep-sec summary { cursor: pointer; color: var(--text-2); font-size: 13.5px; }
+  .deadlist { margin: 8px 0 0; display: grid; gap: 8px; }
+  .deadlist div { font-size: 13px; color: var(--text-2); }
+  .deadlist .mk { margin-right: 6px; }
+  .mv-up { color: var(--good); font-weight: 600; }
+  .mv-down { color: var(--bad); font-weight: 600; }
+
   .tip {
     position: fixed; pointer-events: none; z-index: 10;
     background: var(--text); color: var(--surface);
@@ -222,7 +255,7 @@
     <div id="dash" class="hidden">
       <div id="apps" class="apps"></div>
       <div id="markets" class="tabs"></div>
-      <p class="note">
+      <p class="note" id="note">
         Position is the iTunes Search API's relevance ranking — a proxy for App
         Store search ranking, reliable for tracking movement over time. Lower is
         better; “—” means the app was outside the top results.
@@ -230,6 +263,7 @@
       <div id="overview" class="overview hidden"></div>
       <div id="charts" class="grid"></div>
       <div id="table" class="hidden"></div>
+      <div id="report" class="hidden"></div>
     </div>
 
     <!-- setup / settings view -->
