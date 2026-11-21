@@ -63,7 +63,8 @@ Usage:
 Commands:
   run       Fetch and store the current ranking proxy for every keyword in the config
   once      One-off: look up a single term for an app and print its position
-  report    Show the latest stored position per keyword (use --trend for movement)
+  report    Show the latest stored position per keyword (--trend for movement,
+            --summary for a cross-market run summary with suggestions)
   export    Export all stored snapshots as CSV
   serve     Serve the local web dashboard (default http://localhost:8080)
   version   Print the version

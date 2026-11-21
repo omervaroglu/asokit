@@ -11,6 +11,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 - `run` — fetch and store the ranking proxy for every keyword in the config.
 - `once` — one-off lookup of a single term for an app.
 - `report` — show the latest position per keyword, with `--trend` for movement.
+- `report --summary` — one report of the latest run across all of an app's
+  markets: keywords that entered the top results, gained, dropped, fell out or
+  were not measured, versus the previous run, a date (`--since`) or the last run
+  before a release (`--since-release`). Adds rule-based suggestions
+  (opportunities, markets to check, keywords to consider removing) and prints as
+  text or Markdown (`--format md`). Logic lives in `internal/summary`, ready for
+  the dashboard to reuse.
 - `export` — export all snapshots as CSV.
 - `serve` — embedded single-page web dashboard (small-multiple rank-over-time
   charts, trend badges, table view, light/dark themes); no external assets.
