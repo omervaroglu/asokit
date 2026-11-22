@@ -12,9 +12,10 @@ import (
 // Format is an output format for Write.
 type Format string
 
+// Output formats accepted by Write.
 const (
-	FormatText     Format = "text"
-	FormatMarkdown Format = "md"
+	FormatText     Format = "text" // aligned plain-text tables for the terminal
+	FormatMarkdown Format = "md"   // Markdown headings and pipe tables
 )
 
 // Write renders the report. title is the heading line (e.g. the app name).
