@@ -19,6 +19,7 @@ import (
 	"github.com/omervaroglu/asokit/internal/metrics"
 	"github.com/omervaroglu/asokit/internal/rank"
 	"github.com/omervaroglu/asokit/internal/store"
+	"github.com/omervaroglu/asokit/internal/summary"
 	"github.com/omervaroglu/asokit/internal/track"
 	"github.com/omervaroglu/asokit/internal/web"
 )
@@ -152,8 +153,16 @@ func cmdReport(args []string) error {
 	trend := fs.Bool("trend", false, "show movement versus the previous snapshot")
 	competitors := fs.Bool("competitors", false, "add a column per configured competitor with its rank")
 	compare := fs.String("compare", "", "compare the latest run with the run nearest this date (YYYY-MM-DD)")
+	sum := fs.Bool("summary", false, "summarize the latest run across all markets, with suggestions")
+	since := fs.String("since", "", "with --summary: compare with the run nearest this date (YYYY-MM-DD) instead of the previous run")
+	sinceRelease := fs.String("since-release", "", "with --summary: compare with the last run before this app version was released")
+	noise := fs.Int("noise", summary.DefaultOptions.Noise, "with --summary: ignore position changes of at most this many places")
+	format := fs.String("format", "text", "with --summary: output format, text or md")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if !*sum && (*since != "" || *sinceRelease != "" || *format != "text") {
+		return errors.New("--since, --since-release and --format require --summary")
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -185,6 +194,9 @@ func cmdReport(args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
+	if *sum {
+		return reportSummary(db, app, *since, *sinceRelease, *noise, *format)
+	}
 	if *compare != "" {
 		return reportCompare(db, app, market, *compare)
 	}
@@ -282,6 +294,31 @@ func cmdReport(args []string) error {
 		return err
 	}
 	return printSection("Phrases", market.Phrases)
+}
+
+// reportSummary prints the cross-market run summary for one app: movement
+// versus a base run in every market, plus rule-based suggestions.
+func reportSummary(db *store.Store, app config.App, since, sinceRelease string, noise int, format string) error {
+	base, err := summary.ParseBase(since, sinceRelease)
+	if err != nil {
+		return fmt.Errorf("--since/--since-release: %w", err)
+	}
+	f := summary.Format(format)
+	if f != summary.FormatText && f != summary.FormatMarkdown {
+		return fmt.Errorf("--format: want text or md, got %q", format)
+	}
+
+	markets, err := summary.Load(db, app)
+	if err != nil {
+		return err
+	}
+	r := summary.Build(markets, base, summary.Options{Noise: noise})
+	if len(r.Markets) == 0 {
+		fmt.Println("No snapshots yet. Run `asokit run` first.")
+		return nil
+	}
+	title := fmt.Sprintf("Run summary — app %d%s", app.ID, appNameSuffix(app))
+	return summary.Write(os.Stdout, r, title, f)
 }
 
 // reportCompare shows, per keyword, how the latest run moved versus the run

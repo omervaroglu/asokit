@@ -156,13 +156,36 @@ make build        # produces ./asokit
    asokit report --trend
    ```
 
+4. Get one summary of the latest run across **all** markets, with suggestions:
+
+   ```bash
+   asokit report --summary                        # vs the previous run
+   asokit report --summary --since 2026-11-01     # vs the run nearest a date
+   asokit report --summary --since-release 2.4.0  # vs the last run before a version shipped
+   asokit report --summary --format md > summary.md
+   ```
+
+   It groups keywords into *entered the top results*, *gained*, *dropped*,
+   *fell out*, and *not measured* (failed requests), ignoring moves of up to
+   `--noise` places (default 5) — except in the top 10, where every move counts
+   (#1 → #2 matters more than #120 → #125). It then applies a few fixed, explainable rules:
+
+   - **Opportunities** — rank 11–40, difficulty ≤ 45, relevance ≥ 6: close to
+     the top 10 on an on-topic, low-competition term.
+   - **Check** — a market where 3+ keywords dropped more than 15 places or fell
+     out at once, which usually points to a metadata change.
+   - **Consider removing** — not in the top results in each of the keyword's
+     last 3 measurements; it costs a request per run and tells you little.
+
+   These are heuristics to start a review, not instructions.
+
 ### Commands
 
 | Command          | Description                                                      |
 | ---------------- | ---------------------------------------------------------------- |
 | `asokit run`     | Fetch and store the current position for every keyword in config |
 | `asokit once`    | One-off lookup of a single term without touching the database    |
-| `asokit report`  | Latest position per keyword, with difficulty/relevance/results columns (`--trend` for movement, `--competitors` for competitor ranks, `--compare YYYY-MM-DD` to diff against an earlier run, `--country xx` to pick a market) |
+| `asokit report`  | Latest position per keyword, with difficulty/relevance/results columns (`--trend` for movement, `--competitors` for competitor ranks, `--compare YYYY-MM-DD` to diff against an earlier run, `--country xx` to pick a market, `--summary` for a cross-market run summary with suggestions) |
 | `asokit export`  | Export all stored snapshots as CSV, incl. difficulty/relevance/narrow (`--out file.csv`) |
 | `asokit serve`   | Serve the local web dashboard (default `http://localhost:8080`)  |
 | `asokit version` | Print the version                                                |
@@ -210,6 +233,14 @@ assets — everything is embedded in the binary). Each keyword gets a small
 relevance / results metrics; click a card for its top-10 and competitor
 sparklines. App version dates are drawn as dashed markers on the charts. A
 sortable Table view and light/dark themes are built in.
+
+**Report** shows the same cross-market summary as `asokit report --summary`:
+what entered, gained, dropped or fell out across every market, the markets to
+check, opportunities and keywords to consider removing. Pick the comparison
+point (previous run, before a release, or nearest a date), click a row to jump
+to that keyword's chart, or **Download .md** to share it. The data is also
+available as JSON at `/api/summary?app=<id>[&release=<v>|&since=YYYY-MM-DD]`
+(add `&format=md` for Markdown).
 
 > The server binds to loopback (`127.0.0.1`) by default and writes files /
 > makes outbound requests on your behalf — expose it beyond localhost only if

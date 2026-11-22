@@ -28,15 +28,20 @@ const setupEl = document.getElementById("setup");
 const marketsEl = document.getElementById("markets");
 const controlsEl = document.getElementById("controls");
 const metaEl = document.getElementById("meta");
+const reportEl = document.getElementById("report");
+const noteEl = document.getElementById("note");
 
 let CONFIG = null;     // /api/config: { initialized, app_id, search_limit, markets, apps:[{id,name,markets,...}] }
 let DATA = null;       // /api/data response (apps:[{id,name,icon_url}])
 let CURRENT_APP = 0;   // selected app id
 let CURRENT = "";      // selected market (country code)
-let VIEW = "charts";   // charts | table
+let VIEW = "charts";   // charts | table | report
 let SETUP_MODE = "first"; // first | app | add | edit
 let EDIT_COUNTRY = "";
 let SORT = { col: null, dir: 1 }; // table sort (col key, 1 asc / -1 desc)
+let SUMMARY = null;     // /api/summary response for SUMMARY_APP (null = stale)
+let SUMMARY_APP = 0;
+let SUMMARY_BASE = "";  // "" (previous run) | "release:<v>" | "since:<YYYY-MM-DD>"
 const OPEN = new Set();           // keywords whose card detail is expanded
 const DETAILS = {};               // cache: "country|keyword" -> detail payload
 
@@ -65,6 +70,7 @@ function renderControls(showDashControls) {
       mkBtn("Settings", () => showSetup("edit")),
       mkBtn("Charts", () => setView("charts"), { pressed: VIEW === "charts" }),
       mkBtn("Table", () => setView("table"), { pressed: VIEW === "table" }),
+      mkBtn("Report", () => setView("report"), { pressed: VIEW === "report" }),
     );
   }
   controlsEl.append(mkBtn("◐", toggleTheme));
@@ -128,9 +134,31 @@ function selectApp(id) {
 }
 function setView(v) {
   VIEW = v;
+  const rep = v === "report";
   chartsEl.classList.toggle("hidden", v !== "charts");
   tableEl.classList.toggle("hidden", v !== "table");
+  reportEl.classList.toggle("hidden", !rep);
+  // The report spans every market, so the per-market chrome steps aside.
+  for (const el of [marketsEl, noteEl, document.getElementById("overview")]) {
+    el.style.display = rep ? "none" : "";
+  }
   renderControls(true);
+  renderMeta();
+  if (rep) {
+    if (!SUMMARY || SUMMARY_APP !== CURRENT_APP) loadSummary();
+    else renderReport();
+  }
+}
+
+// renderMeta: the header line — the selected market, or "all markets" in the
+// cross-market report.
+function renderMeta() {
+  if (!DATA) return;
+  const sel = (DATA.apps || []).find((a) => a.id === DATA.app_id);
+  const who = sel && sel.name ? sel.name : `app ${DATA.app_id}`;
+  metaEl.textContent = VIEW === "report"
+    ? `${who} · all markets`
+    : `${who} · ${(DATA.country || "").toUpperCase()} · ${DATA.keywords.length} keyword(s)`;
 }
 
 // ---------- views -----------------------------------------------------------
@@ -304,6 +332,7 @@ async function runNow() {
     const body = await res.json();
     if (!res.ok) toast(body.error ? "Run failed: " + body.error : "Run failed");
     else toast(`Stored ${body.stored} keyword(s)` + (body.failures ? `, ${body.failures} failed` : ""));
+    SUMMARY = null;
     await loadData();
   } catch (e) {
     toast("Run failed: " + e.message);
@@ -316,10 +345,6 @@ async function runNow() {
 function render() {
   if (!DATA) return;
   renderAppSwitcher();
-  const sel = (DATA.apps || []).find((a) => a.id === DATA.app_id);
-  const who = sel && sel.name ? sel.name : `app ${DATA.app_id}`;
-  metaEl.textContent =
-    `${who} · ${(DATA.country || "").toUpperCase()} · ${DATA.keywords.length} keyword(s)`;
   renderOverview();
   renderCharts();
   renderTable();
@@ -733,6 +758,145 @@ function renderTable() {
 }
 
 // ---------- toast -----------------------------------------------------------
+// ---------- report view (cross-market run summary) --------------------------
+function summaryQuery() {
+  let q = `app=${encodeURIComponent(CURRENT_APP)}`;
+  const [kind, val] = SUMMARY_BASE.split(/:(.*)/);
+  if (kind === "release") q += `&release=${encodeURIComponent(val)}`;
+  if (kind === "since") q += `&since=${encodeURIComponent(val)}`;
+  return q;
+}
+async function loadSummary() {
+  reportEl.innerHTML = `<div class="empty">Building report…</div>`;
+  try {
+    const res = await fetch(`api/summary?${summaryQuery()}`, { cache: "no-store" });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || "HTTP " + res.status);
+    SUMMARY = body;
+    SUMMARY_APP = CURRENT_APP;
+    renderReport();
+  } catch (e) {
+    reportEl.innerHTML = `<div class="empty">Failed to build the report: ${escapeHTML(e.message)}</div>`;
+  }
+}
+function setSummaryBase(v) {
+  SUMMARY_BASE = v;
+  SUMMARY = null;
+  loadSummary();
+}
+// goToKeyword jumps from a report row to that market's charts with the
+// keyword's detail open.
+function goToKeyword(country, keyword) {
+  CURRENT = country;
+  OPEN.add(keyword);
+  VIEW = "charts";
+  renderMarketTabs();
+  loadData().then(() => {
+    const card = [...chartsEl.querySelectorAll(".card .kw")].find((el) => el.textContent === keyword);
+    if (card) card.closest(".card").scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+function renderReport() {
+  const S = SUMMARY;
+  if (!S) return;
+  const o = S.options;
+  const mk = (c) => `<span class="mk">${escapeHTML(c.toUpperCase())}</span>`;
+  const rk = (p) => (p ? "#" + p : "—");
+  const mv = (d) => (d > 0 ? `<span class="mv-up">▲ ${d}</span>` : `<span class="mv-down">▼ ${-d}</span>`);
+  const num = (v) => (v == null ? "—" : Math.round(v));
+
+  // Base picker: previous run, before a release, or nearest a date.
+  let opts = `<option value="">Previous run</option>`;
+  for (const v of S.versions || []) {
+    const val = "release:" + v;
+    opts += `<option value="${escapeHTML(val)}"${SUMMARY_BASE === val ? " selected" : ""}>Before release ${escapeHTML(v)}</option>`;
+  }
+  const isDate = SUMMARY_BASE.startsWith("since:");
+  opts += `<option value="date"${isDate ? " selected" : ""}>Nearest a date…</option>`;
+  const dateVal = isDate ? SUMMARY_BASE.slice(6) : "";
+
+  let compared = 0, measured = 0, ranked = 0;
+  for (const m of S.markets) { if (m.has_base) compared++; measured += m.keywords; ranked += m.ranked; }
+
+  const tile = (n, l, cls = "") => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  let html = `<div class="rep-bar">
+      <label>Compare latest run with <select id="rep-base">${opts}</select></label>
+      <input type="date" id="rep-date" value="${escapeHTML(dateVal)}"${isDate ? "" : ` class="hidden"`}>
+      <span class="spacer"></span>
+      <a class="ctl" href="api/summary?${summaryQuery()}&format=md" download>Download .md</a>
+    </div>
+    <p class="rep-sub">${S.markets.length} markets (${compared} compared) · ${measured} keywords measured · ${ranked} in the top results.
+      Moves of ${o.noise} places or fewer are treated as noise, except in the top ${o.top_tier}, where every move counts.</p>
+    <div class="overview">` +
+    tile(S.entered.length, "Entered", "good") + tile(S.gained.length, "Gained", "good") +
+    tile(S.dropped.length, "Dropped", "bad") + tile(S.lost.length, "Fell out", "bad") +
+    tile(S.opportunities.length, "Opportunities") + tile(S.dead.length, "Consider removing") +
+    `</div>`;
+
+  // A section is a card with a clickable table; rows jump to the keyword.
+  const section = (title, why, header, items, cells, cls = "") => {
+    if (!items.length) return "";
+    let t = `<div class="rep-sec ${cls}"><h3>${title}</h3>${why ? `<p class="why">${why}</p>` : ""}` +
+      `<table class="view"><thead><tr>${header.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
+    for (const it of items) {
+      t += `<tr class="go" data-c="${escapeHTML(it.country)}" data-k="${escapeHTML(it.keyword)}">` +
+        cells(it).map((c) => `<td>${c}</td>`).join("") + `</tr>`;
+    }
+    return t + `</tbody></table></div>`;
+  };
+
+  for (const a of S.alerts) {
+    html += `<div class="rep-sec alert"><h3>Check ${mk(a.country)}</h3><p class="why">` +
+      `${a.keywords.length} keywords dropped more than ${o.alert_drop} places or fell out at once — often a metadata change: ` +
+      `${a.keywords.map(escapeHTML).join(", ")}</p></div>`;
+  }
+  html += section(`Entered the top results (${S.entered.length})`, "", ["Market", "Keyword", "Now"],
+    S.entered, (m) => [mk(m.country), escapeHTML(m.keyword), rk(m.now)]);
+  html += section(`Gained (${S.gained.length})`, "", ["Market", "Keyword", "Was", "Now", "Move"],
+    S.gained, (m) => [mk(m.country), escapeHTML(m.keyword), rk(m.was), rk(m.now), mv(m.delta)]);
+  html += section(`Dropped (${S.dropped.length})`, "", ["Market", "Keyword", "Was", "Now", "Move"],
+    S.dropped, (m) => [mk(m.country), escapeHTML(m.keyword), rk(m.was), rk(m.now), mv(m.delta)]);
+  html += section(`Fell out of the top results (${S.lost.length})`, "", ["Market", "Keyword", "Was"],
+    S.lost, (m) => [mk(m.country), escapeHTML(m.keyword), rk(m.was)]);
+  html += section(`Opportunities (${S.opportunities.length})`,
+    `Rank ${o.opp_min_rank}–${o.opp_max_rank}, difficulty ≤ ${o.opp_max_difficulty}, relevance ≥ ${o.opp_min_relevance}: close to the top 10 on an on-topic, low-competition term.`,
+    ["Market", "Keyword", "Now", "Diff", "Rel"], S.opportunities,
+    (m) => [mk(m.country), escapeHTML(m.keyword), rk(m.now), num(m.difficulty), num(m.relevance)]);
+
+  const unmeasured = S.markets.filter((m) => m.unmeasured && m.unmeasured.length);
+  if (unmeasured.length) {
+    html += `<div class="rep-sec"><h3>Not measured in the latest run</h3><p class="why">Usually failed requests; they keep their previous value.</p><div class="deadlist">` +
+      unmeasured.map((m) => `<div>${mk(m.country)}${m.unmeasured.map(escapeHTML).join(", ")}</div>`).join("") + `</div></div>`;
+  }
+  if (S.dead.length) {
+    const by = {};
+    for (const d of S.dead) (by[d.country] = by[d.country] || []).push(d.keyword);
+    const rows = Object.entries(by).sort((a, b) => b[1].length - a[1].length);
+    html += `<div class="rep-sec"><h3>Consider removing (${S.dead.length})</h3>` +
+      `<p class="why">Not in the top results in each of their last ${o.dead_runs} measurements — each costs a request per run.</p>` +
+      `<details><summary>Show by market</summary><div class="deadlist">` +
+      rows.map(([c, kws]) => `<div>${mk(c)}<b>${kws.length}</b> · ${kws.map(escapeHTML).join(", ")}</div>`).join("") +
+      `</div></details></div>`;
+  }
+  const nobase = S.markets.filter((m) => !m.has_base);
+  if (nobase.length) {
+    html += `<p class="rep-sub">No comparison for ${nobase.map((m) => `${escapeHTML(m.country.toUpperCase())} (${escapeHTML(m.note)})`).join(", ")}.</p>`;
+  }
+  reportEl.innerHTML = html;
+
+  const sel = document.getElementById("rep-base");
+  const date = document.getElementById("rep-date");
+  sel.addEventListener("change", () => {
+    if (sel.value === "date") { date.classList.remove("hidden"); date.focus(); return; }
+    setSummaryBase(sel.value);
+  });
+  date.addEventListener("change", () => { if (date.value) setSummaryBase("since:" + date.value); });
+  for (const tr of reportEl.querySelectorAll("tr.go")) {
+    tr.addEventListener("click", () => goToKeyword(tr.dataset.c, tr.dataset.k));
+  }
+}
+
 let toastTimer = null;
 function toast(msg) {
   const el = document.getElementById("toast");
