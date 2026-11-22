@@ -34,9 +34,9 @@ func Write(w io.Writer, r Report, title string, format Format) error {
 		[]string{"MARKET", "KEYWORD", "NOW"}, rows(r.Entered, func(m Move) []string {
 			return []string{up(m.Country), m.Keyword, rank(m.Now)}
 		}))
-	out.table(fmt.Sprintf("Gained more than %d places (%d)", r.Options.Noise, len(r.Gained)),
+	out.table(fmt.Sprintf("Gained more than %d places, or any move in the top %d (%d)", r.Options.Noise, r.Options.TopTier, len(r.Gained)),
 		[]string{"MARKET", "KEYWORD", "WAS", "NOW", "MOVE"}, rows(r.Gained, moveRow))
-	out.table(fmt.Sprintf("Dropped more than %d places (%d)", r.Options.Noise, len(r.Dropped)),
+	out.table(fmt.Sprintf("Dropped more than %d places, or any move in the top %d (%d)", r.Options.Noise, r.Options.TopTier, len(r.Dropped)),
 		[]string{"MARKET", "KEYWORD", "WAS", "NOW", "MOVE"}, rows(r.Dropped, moveRow))
 	out.table(fmt.Sprintf("Fell out of the top results (%d)", len(r.Lost)),
 		[]string{"MARKET", "KEYWORD", "WAS"}, rows(r.Lost, func(m Move) []string {

@@ -827,7 +827,7 @@ function renderReport() {
       <a class="ctl" href="api/summary?${summaryQuery()}&format=md" download>Download .md</a>
     </div>
     <p class="rep-sub">${S.markets.length} markets (${compared} compared) · ${measured} keywords measured · ${ranked} in the top results.
-      Moves of ${o.noise} places or fewer are treated as noise.</p>
+      Moves of ${o.noise} places or fewer are treated as noise, except in the top ${o.top_tier}, where every move counts.</p>
     <div class="overview">` +
     tile(S.entered.length, "Entered", "good") + tile(S.gained.length, "Gained", "good") +
     tile(S.dropped.length, "Dropped", "bad") + tile(S.lost.length, "Fell out", "bad") +

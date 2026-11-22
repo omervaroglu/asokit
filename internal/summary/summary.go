@@ -18,6 +18,9 @@ import (
 type Options struct {
 	// Noise: position changes of at most this many places are ignored.
 	Noise int `json:"noise"`
+	// TopTier: inside the top TopTier (before or after), every move counts,
+	// since one place matters more there than five places at #120.
+	TopTier int `json:"top_tier"`
 	// Opportunity: a ranked keyword in [OppMinRank, OppMaxRank] with difficulty
 	// at most OppMaxDifficulty and relevance at least OppMinRelevance.
 	OppMinRank       int     `json:"opp_min_rank"`
@@ -36,6 +39,7 @@ type Options struct {
 // DefaultOptions are the thresholds used when an Options field is zero.
 var DefaultOptions = Options{
 	Noise:            5,
+	TopTier:          10,
 	OppMinRank:       11,
 	OppMaxRank:       40,
 	OppMaxDifficulty: 45,
@@ -49,6 +53,9 @@ func (o Options) withDefaults() Options {
 	d := DefaultOptions
 	if o.Noise > 0 {
 		d.Noise = o.Noise
+	}
+	if o.TopTier > 0 {
+		d.TopTier = o.TopTier
 	}
 	if o.OppMinRank > 0 {
 		d.OppMinRank = o.OppMinRank
@@ -214,10 +221,14 @@ func Build(markets []Market, base Base, opts Options) Report {
 				alertKws = append(alertKws, kw)
 			case p.Found && c.Found:
 				mv := move(m.Country, p, c)
+				noise := opts.Noise
+				if p.Position <= opts.TopTier || c.Position <= opts.TopTier {
+					noise = 0
+				}
 				switch {
-				case mv.Delta > opts.Noise:
+				case mv.Delta > noise:
 					r.Gained = append(r.Gained, mv)
-				case mv.Delta < -opts.Noise:
+				case mv.Delta < -noise:
 					r.Dropped = append(r.Dropped, mv)
 				}
 				if mv.Delta < -opts.AlertDrop {

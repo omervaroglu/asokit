@@ -34,15 +34,16 @@ func keywords(r []Move) []string {
 func TestBuildPreviousRun(t *testing.T) {
 	m := Market{
 		Country: "us",
-		Terms:   []string{"calm", "sleep", "focus", "rain", "noise", "breathe", "failed"},
+		Terms:   []string{"calm", "sleep", "focus", "rain", "noise", "breathe", "failed", "top"},
 		History: []store.Snapshot{
 			snap(day1, "calm", 50), snap(day2, "calm", 10), // gained 40
 			snap(day1, "sleep", 10), snap(day2, "sleep", 30), // dropped 20
 			snap(day1, "focus", 0), snap(day2, "focus", 7), // entered
 			snap(day1, "rain", 90), snap(day2, "rain", 0), // lost
 			snap(day1, "noise", 20), snap(day2, "noise", 23), // within noise
-			snap(day2, "breathe", 5), // new keyword, no base
-			snap(day1, "failed", 3),  // not measured in latest run
+			snap(day2, "breathe", 5),                   // new keyword, no base
+			snap(day1, "failed", 3),                    // not measured in latest run
+			snap(day1, "top", 1), snap(day2, "top", 2), // top-10 move: counts despite noise
 		},
 	}
 	r := Build([]Market{m}, Base{Kind: BasePrevious}, Options{})
@@ -55,7 +56,7 @@ func TestBuildPreviousRun(t *testing.T) {
 	}
 	check("entered", r.Entered, "focus")
 	check("gained", r.Gained, "calm")
-	check("dropped", r.Dropped, "sleep")
+	check("dropped", r.Dropped, "sleep", "top")
 	check("lost", r.Lost, "rain")
 	if r.Gained[0].Delta != 40 || r.Dropped[0].Delta != -20 {
 		t.Errorf("deltas = %d, %d; want 40, -20", r.Gained[0].Delta, r.Dropped[0].Delta)
@@ -68,8 +69,8 @@ func TestBuildPreviousRun(t *testing.T) {
 	if strings.Join(info.Unmeasured, ",") != "failed" {
 		t.Errorf("unmeasured = %v, want [failed]", info.Unmeasured)
 	}
-	if info.Keywords != 6 || info.Ranked != 5 {
-		t.Errorf("keywords/ranked = %d/%d, want 6/5", info.Keywords, info.Ranked)
+	if info.Keywords != 7 || info.Ranked != 6 {
+		t.Errorf("keywords/ranked = %d/%d, want 7/6", info.Keywords, info.Ranked)
 	}
 	// Opportunities: ranked 11–40 with low difficulty, high relevance.
 	check("opportunities", r.Opportunities, "noise", "sleep")
@@ -145,7 +146,7 @@ func TestWriteFormats(t *testing.T) {
 	if err := Write(&txt, r, "Demo", FormatText); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Demo", "Gained more than 5 places (1)", "▲ 40", "Entered the top results (1)"} {
+	for _, want := range []string{"Demo", "Gained more than 5 places, or any move in the top 10 (1)", "▲ 40", "Entered the top results (1)"} {
 		if !strings.Contains(txt.String(), want) {
 			t.Errorf("text output missing %q:\n%s", want, txt.String())
 		}

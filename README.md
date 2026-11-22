@@ -167,7 +167,8 @@ make build        # produces ./asokit
 
    It groups keywords into *entered the top results*, *gained*, *dropped*,
    *fell out*, and *not measured* (failed requests), ignoring moves of up to
-   `--noise` places (default 5). It then applies a few fixed, explainable rules:
+   `--noise` places (default 5) — except in the top 10, where every move counts
+   (#1 → #2 matters more than #120 → #125). It then applies a few fixed, explainable rules:
 
    - **Opportunities** — rank 11–40, difficulty ≤ 45, relevance ≥ 6: close to
      the top 10 on an on-topic, low-competition term.
