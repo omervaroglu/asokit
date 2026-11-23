@@ -242,6 +242,11 @@ to that keyword's chart, or **Download .md** to share it. The data is also
 available as JSON at `/api/summary?app=<id>[&release=<v>|&since=YYYY-MM-DD]`
 (add `&format=md` for Markdown).
 
+<img src="docs/report.png" alt="Report view — cross-market run summary with suggestions" width="620">
+
+> The report screenshot uses generated demo data for a fictional app, so every
+> section has something to show.
+
 > The server binds to loopback (`127.0.0.1`) by default and writes files /
 > makes outbound requests on your behalf — expose it beyond localhost only if
 > you understand that.
